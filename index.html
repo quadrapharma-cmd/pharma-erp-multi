@@ -223,6 +223,41 @@ strong{font-weight:700;color:var(--text)}
 }
 .co-switch-btn:hover{background:var(--hover);color:var(--text);}
 
+
+/* ══ AI ASSISTANT ══ */
+#ai-fab{
+  position:fixed;bottom:28px;left:28px;z-index:500;
+  width:52px;height:52px;border-radius:50%;
+  background:linear-gradient(135deg,#2ea043,#1a7f37);
+  border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;
+  font-size:22px;box-shadow:0 4px 20px rgba(46,160,67,.5);transition:.2s;
+}
+#ai-fab:hover{transform:scale(1.1);}
+#ai-panel{
+  position:fixed;bottom:90px;left:28px;z-index:500;
+  width:360px;height:480px;background:var(--card);
+  border:1px solid var(--border);border-radius:16px;
+  display:none;flex-direction:column;overflow:hidden;
+  box-shadow:0 8px 32px rgba(0,0,0,.4);
+}
+.ai-panel-head{
+  padding:14px 16px;background:linear-gradient(135deg,#2ea043,#1a7f37);
+  display:flex;align-items:center;justify-content:space-between;
+}
+.ai-panel-head span{font-size:14px;font-weight:700;color:#fff;}
+.ai-panel-close{background:none;border:none;color:rgba(255,255,255,.8);font-size:18px;cursor:pointer;}
+#ai-chat{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;}
+.ai-msg{max-width:85%;padding:10px 13px;border-radius:12px;font-size:13px;line-height:1.5;word-wrap:break-word;}
+.ai-user{background:var(--green-bg);color:var(--text);border:1px solid rgba(46,160,67,.3);align-self:flex-start;}
+.ai-assistant{background:var(--hover);color:var(--text);border:1px solid var(--border);align-self:flex-end;}
+.ai-panel-input{display:flex;gap:8px;padding:12px;border-top:1px solid var(--border);}
+.ai-panel-input input{flex:1;background:var(--bg);border:1px solid var(--border);border-radius:8px;
+  padding:8px 12px;font-size:13px;color:var(--text);font-family:'Cairo',sans-serif;}
+.ai-panel-input input:focus{outline:none;border-color:var(--green);}
+.ai-send-btn{background:var(--green);color:#fff;border:none;border-radius:8px;
+  padding:8px 14px;cursor:pointer;font-family:'Cairo',sans-serif;font-size:13px;font-weight:700;}
+.ai-send-btn:hover{background:var(--green-light);}
+
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 </head>
@@ -325,7 +360,7 @@ const defaultDB = {
   registrations:[], distributors:[], deliveryOrders:[], deliveryItems:[],
   expenses:[], employees:[], budgetLines:[], campaigns:[], salesTargets:[],
   receivables:[], payrollRuns:[], purchaseOrders:[], qualityChecks:[],
-  returns:[], contracts:[], assets:[],
+  returns:[], contracts:[], assets:[], eInvoices:[], taxLines:[],
   _seq:{}
 };
 
@@ -458,6 +493,9 @@ const navItems=[
   {id:'salesvstarget',icon:'📊',label:'المبيعات vs الأهداف',section:'العمليات'},
   {id:'costanalysis',icon:'📉',label:'تحليل تكلفة المنتج',section:'العمليات'},
   {id:'assets',icon:'🏗️',label:'الأصول الثابتة',section:'المالية'},
+  {id:'vat',icon:'🧾',label:'ضريبة القيمة المضافة',section:'الضرائب'},
+  {id:'einvoice',icon:'📄',label:'الفواتير الإلكترونية',section:'الضرائب'},
+  {id:'taxes',icon:'🏦',label:'الضرائب العامة',section:'الضرائب'},
 ];
 
 function renderNav(){
@@ -1946,7 +1984,534 @@ function saveAsset(id){
   closeModal(); go('assets');
 }
 
+// ════════════════════════════════════════════════════════════════
+// VAT MODULE — ضريبة القيمة المضافة
+// ════════════════════════════════════════════════════════════════
+
+// Add VAT fields to products (taxable flag + vatRate)
+// Add VAT to deliveries and purchases
+
+PAGES.vat = function(){
+  const dels  = getAll('deliveryOrders').filter(d=>d.status==='delivered');
+  const purs  = getAll('purchaseOrders').filter(p=>p.status==='مستلم');
+  const outVat = dels.reduce((s,d)=>s+Number(d.vatAmount||0),0);
+  const inVat  = purs.reduce((s,p)=>s+Number(p.vatAmount||0),0);
+  const netVat = outVat - inVat;
+
+  setPage('حساب ضريبة القيمة المضافة','الضريبة على المبيعات والمشتريات (VAT)','',`
+    <div class="stats-grid g4">
+      <div class="stat-card"><div class="lbl">ضريبة المبيعات (مخرجات)</div><div class="val text-red">${fmt(outVat)} ج.م</div></div>
+      <div class="stat-card"><div class="lbl">ضريبة المشتريات (مدخلات)</div><div class="val text-green">${fmt(inVat)} ج.م</div></div>
+      <div class="stat-card"><div class="lbl">صافي الضريبة المستحقة</div><div class="val ${netVat>=0?'text-red':'text-green'} fw7">${fmt(netVat)} ج.م</div><div class="sub">${netVat>=0?'مستحق للسداد':'رصيد دائن'}</div></div>
+      <div class="stat-card"><div class="lbl">نسبة الضريبة القياسية</div><div class="val text-blue">14%</div><div class="sub">طبقاً للقانون المصري</div></div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-group="vat" data-tab="vat-out">ضريبة المبيعات</button>
+      <button class="tab" data-group="vat" data-tab="vat-in">ضريبة المشتريات</button>
+      <button class="tab" data-group="vat" data-tab="vat-summary">ملخص الإقرار</button>
+    </div>
+    <div id="vat-out" class="tab-pane" data-group="vat">
+      <div class="card">${tbl(['رقم الأمر','الموزع','قيمة المبيعات','خاضع للضريبة','نسبة VAT','مبلغ الضريبة','الإجمالي شامل الضريبة'],
+        dels.map(d=>{
+          const dist=getAll('distributors').find(x=>x.id===d.distributorId);
+          const taxable=d.taxable!==false;
+          const vatRate=Number(d.vatRate||14);
+          const vatAmt=taxable?Number(d.vatAmount||0):0;
+          return tr(
+            `<code>${d.orderNumber||'DO-'+d.id}</code>`,
+            dist?.name||'-',
+            fmt(d.totalAmount)+' ج.م',
+            taxable?'<span class="badge b-green">نعم</span>':'<span class="badge b-gray">لا</span>',
+            taxable?vatRate+'%':'—',
+            taxable?`<span class="text-red fw7">${fmt(vatAmt)} ج.م</span>`:'—',
+            `<span class="text-blue fw7">${fmt(Number(d.totalAmount||0)+vatAmt)} ج.م</span>`
+          );
+        })
+      )}</div>
+    </div>
+    <div id="vat-in" class="tab-pane" data-group="vat" style="display:none">
+      <div class="card">${tbl(['رقم الطلب','المادة','قيمة المشتريات','خاضع للضريبة','نسبة VAT','مبلغ الضريبة','الإجمالي شامل الضريبة'],
+        purs.map(p=>{
+          const taxable=p.taxable!==false;
+          const vatAmt=taxable?Number(p.vatAmount||0):0;
+          return tr(
+            `<code>${p.poNumber||'PUR-'+p.id}</code>`,
+            p.materialName||'-',
+            fmt(p.totalAmount)+' ج.م',
+            taxable?'<span class="badge b-green">نعم</span>':'<span class="badge b-gray">لا</span>',
+            taxable?(p.vatRate||14)+'%':'—',
+            taxable?`<span class="text-green fw7">${fmt(vatAmt)} ج.م</span>`:'—',
+            `<span class="text-blue fw7">${fmt(Number(p.totalAmount||0)+vatAmt)} ج.م</span>`
+          );
+        })
+      )}</div>
+    </div>
+    <div id="vat-summary" class="tab-pane" data-group="vat" style="display:none">
+      <div class="card" style="padding:28px;max-width:600px">
+        <h2 style="font-size:17px;font-weight:700;margin-bottom:20px;padding-bottom:12px;border-bottom:1px solid var(--border)">📋 ملخص إقرار VAT</h2>
+        <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed var(--border)">
+          <span>الضريبة على المبيعات (مخرجات)</span>
+          <span class="text-red fw7">${fmt(outVat)} ج.م</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed var(--border)">
+          <span>الضريبة على المشتريات (مدخلات)</span>
+          <span class="text-green fw7">${fmt(inVat)} ج.م</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:14px 0;border-top:2px solid ${netVat>=0?'var(--red)':'var(--green)'};margin-top:8px">
+          <span style="font-weight:700;font-size:15px">${netVat>=0?'الضريبة المستحقة للسداد':'رصيد ضريبي دائن'}</span>
+          <span class="${netVat>=0?'text-red':'text-green'} fw7" style="font-size:18px">${fmt(Math.abs(netVat))} ج.م</span>
+        </div>
+        <div style="margin-top:16px;padding:12px;background:var(--green-bg);border:1px solid rgba(46,160,67,.3);border-radius:10px;font-size:12px;color:var(--muted)">
+          💡 هذا الملخص يمكن استخدامه كمرجع لتحضير الإقرار الضريبي الشهري على بوابة هيئة الضرائب المصرية
+        </div>
+      </div>
+    </div>`);
+  initTabs();
+};
+
+// ════════════════════════════════════════════════════════════════
+// ELECTRONIC INVOICING — الفواتير الإلكترونية
+// ════════════════════════════════════════════════════════════════
+
+PAGES.einvoice = function(){
+  const rows = getAll('eInvoices');
+  setPage('الفواتير الإلكترونية','إنشاء وإرسال فواتير لبوابة هيئة الضرائب المصرية',
+    `<button class="btn btn-green" onclick="createEInvoice()">${ic.plus} إنشاء فاتورة جديدة</button>`,
+    `<div class="stats-grid g4">
+      <div class="stat-card"><div class="lbl">إجمالي الفواتير</div><div class="val">${rows.length}</div></div>
+      <div class="stat-card"><div class="lbl">مرسلة ✅</div><div class="val text-green">${rows.filter(r=>r.etaStatus==='submitted').length}</div></div>
+      <div class="stat-card"><div class="lbl">معتمدة ✅</div><div class="val text-blue">${rows.filter(r=>r.etaStatus==='valid').length}</div></div>
+      <div class="stat-card"><div class="lbl">مرفوضة ❌</div><div class="val text-red">${rows.filter(r=>r.etaStatus==='rejected').length}</div></div>
+    </div>
+    <div class="card">${tbl(['رقم الفاتورة','الموزع','تاريخ الإصدار','القيمة','VAT','الإجمالي','حالة الإرسال','UUID',''],
+      rows.map(r=>tr(
+        `<code>${r.internalId||'-'}</code>`,
+        getAll('distributors').find(d=>d.id===r.distributorId)?.name||r.receiverName||'-',
+        r.dateTimeIssued?.slice(0,10)||'-',
+        fmt(r.totalAmount)+' ج.م',
+        fmt(r.vatAmount||0)+' ج.م',
+        `<span class="text-green fw7">${fmt(Number(r.totalAmount||0)+Number(r.vatAmount||0))} ج.م</span>`,
+        eInvoiceStatusBadge(r.etaStatus),
+        r.uuid?`<code style="font-size:10px">${r.uuid.slice(0,12)}...</code>`:'—',
+        `<div class="action-bar">
+          ${!r.etaStatus||r.etaStatus==='draft'?`<button class="btn btn-green btn-sm" onclick="submitEInvoice(${r.id})">📤 إرسال</button>`:''}
+          ${r.uuid?`<button class="btn btn-ghost btn-sm" onclick="checkEInvoiceStatus('${r.uuid}')">🔄 تحقق</button>`:''}
+          <button class="icon-btn del" onclick="if(confirm('حذف؟')){remove('eInvoices',${r.id});go('einvoice')}">${ic.del}</button>
+        </div>`
+      ))
+    )}</div>
+    <div style="margin-top:16px;padding:14px 18px;background:rgba(56,139,253,.08);border:1px solid rgba(56,139,253,.2);border-radius:10px;font-size:13px;color:var(--muted)">
+      ⚙️ <strong style="color:var(--text)">إعدادات API:</strong>
+      للربط ببوابة هيئة الضرائب تحتاج إدخال بياناتك في
+      <button onclick="showETASettings()" class="btn btn-ghost btn-sm" style="margin-right:8px">⚙️ إعدادات ETA</button>
+    </div>`);
+};
+
+function eInvoiceStatusBadge(s){
+  const map={
+    draft:['b-gray','مسودة'],submitted:['b-amber','مرسلة'],
+    valid:['b-green','معتمدة'],rejected:['b-red','مرفوضة'],cancelled:['b-red','ملغاة']
+  };
+  const [c,l]=map[s]||['b-gray','غير محدد'];
+  return `<span class="badge ${c}">${l}</span>`;
+}
+
+function showETASettings(){
+  const saved = JSON.parse(localStorage.getItem('eta_config')||'{}');
+  showModal(modal('إعدادات بوابة هيئة الضرائب المصرية (ETA)',`
+    <div style="padding:12px;background:rgba(46,160,67,.08);border:1px solid rgba(46,160,67,.2);border-radius:8px;margin-bottom:16px;font-size:12px;color:var(--muted)">
+      🔒 بياناتك محفوظة محلياً على جهازك فقط ولا تُرسل لأي جهة
+    </div>
+    ${fg('Client ID *',inp('eta-cid','text',saved.clientId||''))}
+    ${fg('Client Secret *',inp('eta-sec','password',saved.clientSecret||''))}
+    ${fg('Tax Registration Number (TRN)',inp('eta-trn','text',saved.taxRegNumber||''))}
+    ${fg('Taxpayer Name (بالعربي)',inp('eta-name','text',saved.taxpayerName||''))}
+    ${fg('Taxpayer Address',inp('eta-addr','text',saved.address||''))}
+    <div class="form-row">
+      ${fg('البيئة',sel('eta-env',[{v:'https://id.preprod.eta.gov.eg',l:'Preproduction (اختبار)'},{v:'https://id.eta.gov.eg',l:'Production (إنتاج)'}],saved.idServerUrl||'https://id.preprod.eta.gov.eg'))}
+      ${fg('API Server',sel('eta-api',[{v:'https://api.preprod.eta.gov.eg',l:'Preproduction'},{v:'https://api.eta.gov.eg',l:'Production'}],saved.apiServerUrl||'https://api.preprod.eta.gov.eg'))}
+    </div>
+    <div class="form-actions">
+      <button class="btn btn-green" onclick="saveETASettings()">💾 حفظ الإعدادات</button>
+      <button class="btn btn-ghost" onclick="testETAConnection()">🔗 اختبار الاتصال</button>
+      <button class="btn btn-ghost" onclick="closeModal()">إلغاء</button>
+    </div>`));
+}
+
+function saveETASettings(){
+  const config={
+    clientId:val('eta-cid'), clientSecret:val('eta-sec'),
+    taxRegNumber:val('eta-trn'), taxpayerName:val('eta-name'),
+    address:val('eta-addr'),
+    idServerUrl:val('eta-env'), apiServerUrl:val('eta-api')
+  };
+  if(!config.clientId||!config.clientSecret) return alert('يرجى إدخال Client ID و Client Secret');
+  localStorage.setItem('eta_config', JSON.stringify(config));
+  closeModal();
+  alert('✅ تم حفظ الإعدادات');
+}
+
+async function getETAToken(){
+  const cfg = JSON.parse(localStorage.getItem('eta_config')||'{}');
+  if(!cfg.clientId||!cfg.clientSecret) throw new Error('يرجى إعداد بيانات ETA أولاً');
+  const r = await fetch(`${cfg.idServerUrl}/connect/token`, {
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:`grant_type=client_credentials&client_id=${encodeURIComponent(cfg.clientId)}&client_secret=${encodeURIComponent(cfg.clientSecret)}&scope=InvoicingAPI`
+  });
+  if(!r.ok) throw new Error('فشل الحصول على Token — تحقق من Client ID و Secret');
+  const data = await r.json();
+  return {token: data.access_token, cfg};
+}
+
+async function testETAConnection(){
+  try{
+    const {token} = await getETAToken();
+    alert('✅ تم الاتصال ببوابة ETA بنجاح!');
+  } catch(e){
+    alert('❌ فشل الاتصال: '+e.message);
+  }
+}
+
+function createEInvoice(){
+  const dOpts=[{v:0,l:'اختر موزع...'},...getAll('distributors').map(d=>({v:d.id,l:d.name}))];
+  const prods=getAll('products');
+  window._invLines=[{productId:0,description:'',quantity:1,unitPrice:'',vatRate:14,taxable:true}];
+  showModal(modal('إنشاء فاتورة إلكترونية',`
+    ${fg('الموزع (المشتري) *',sel('inv-dist',dOpts))}
+    <div class="form-row">
+      ${fg('رقم الفاتورة الداخلي *',inp('inv-id','text','INV-'+Date.now().toString().slice(-6)))}
+      ${fg('تاريخ الإصدار',inp('inv-date','date',today()))}
+    </div>
+    ${fg('رقم تسجيل ضريبي للمشتري',inp('inv-buyer-trn','text'))}
+    <div class="fg"><label>بنود الفاتورة</label>
+      <div id="inv-lines-wrap" style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg)"></div>
+      <button type="button" onclick="addInvLine()" style="margin-top:8px;font-size:12px;color:var(--green-light);background:none;border:none;cursor:pointer;font-weight:700">+ إضافة بند</button>
+    </div>
+    <div id="inv-totals" style="margin-top:12px;padding:12px;background:var(--card);border-radius:8px;font-size:13px"></div>
+    <div class="form-actions">
+      <button class="btn btn-green" onclick="saveEInvoiceDraft()">💾 حفظ كمسودة</button>
+      <button class="btn btn-ghost" onclick="closeModal()">إلغاء</button>
+    </div>`));
+  renderInvLines();
+}
+
+function renderInvLines(){
+  const prods=getAll('products'),wrap=$('inv-lines-wrap');if(!wrap)return;
+  wrap.innerHTML=window._invLines.map((line,i)=>`
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr 60px 60px auto;gap:6px;align-items:center;margin-bottom:6px">
+      <select onchange="window._invLines[${i}].productId=Number(this.value);updateInvTotals()" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:12px;color:var(--text);font-family:'Cairo',sans-serif">
+        <option value="0">اختر منتج...</option>${prods.map(p=>`<option value="${p.id}" ${p.id===line.productId?'selected':''}>${p.name}</option>`).join('')}
+      </select>
+      <input type="number" value="${line.quantity}" placeholder="الكمية" onchange="window._invLines[${i}].quantity=Number(this.value);updateInvTotals()" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:12px;color:var(--text);font-family:'Cairo',sans-serif">
+      <input type="number" value="${line.unitPrice}" placeholder="السعر" onchange="window._invLines[${i}].unitPrice=this.value;updateInvTotals()" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:12px;color:var(--text);font-family:'Cairo',sans-serif">
+      <select onchange="window._invLines[${i}].vatRate=Number(this.value);updateInvTotals()" style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:6px;font-size:12px;color:var(--text);font-family:'Cairo',sans-serif">
+        <option value="14" ${line.vatRate===14?'selected':''}>14%</option>
+        <option value="5" ${line.vatRate===5?'selected':''}>5%</option>
+        <option value="0" ${line.vatRate===0?'selected':''}>معفي 0%</option>
+      </select>
+      <input type="checkbox" ${line.taxable?'checked':''} onchange="window._invLines[${i}].taxable=this.checked;updateInvTotals()" title="خاضع للضريبة" style="width:18px;height:18px;cursor:pointer">
+      ${window._invLines.length>1?`<button onclick="window._invLines.splice(${i},1);renderInvLines()" style="color:var(--red);background:none;border:none;cursor:pointer;font-size:18px">×</button>`:'<span></span>'}
+    </div>`).join('');
+  updateInvTotals();
+}
+function addInvLine(){ window._invLines.push({productId:0,quantity:1,unitPrice:'',vatRate:14,taxable:true});renderInvLines(); }
+function updateInvTotals(){
+  const lines=window._invLines||[];
+  const subTotal=lines.reduce((s,l)=>s+Number(l.quantity||0)*Number(l.unitPrice||0),0);
+  const vatTotal=lines.reduce((s,l)=>l.taxable?s+Number(l.quantity||0)*Number(l.unitPrice||0)*(Number(l.vatRate||0)/100):s,0);
+  const grand=subTotal+vatTotal;
+  const el=$('inv-totals');
+  if(el) el.innerHTML=`
+    <div style="display:flex;justify-content:space-between;padding:4px 0"><span>الإجمالي قبل الضريبة:</span><span class="fw7">${fmt(subTotal)} ج.م</span></div>
+    <div style="display:flex;justify-content:space-between;padding:4px 0"><span>ضريبة القيمة المضافة:</span><span class="text-red fw7">${fmt(vatTotal)} ج.م</span></div>
+    <div style="display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid var(--border);font-size:15px"><span class="fw7">الإجمالي شامل الضريبة:</span><span class="text-green fw7">${fmt(grand)} ج.م</span></div>`;
+}
+
+function saveEInvoiceDraft(){
+  const distId=numVal('inv-dist');if(!distId)return alert('يرجى اختيار الموزع');
+  const lines=window._invLines||[];
+  const subTotal=lines.reduce((s,l)=>s+Number(l.quantity||0)*Number(l.unitPrice||0),0);
+  const vatTotal=lines.reduce((s,l)=>l.taxable?s+Number(l.quantity||0)*Number(l.unitPrice||0)*(Number(l.vatRate||0)/100):s,0);
+  const dist=getById('distributors',distId);
+  insert('eInvoices',{
+    internalId:val('inv-id')||'INV-'+Date.now(),
+    distributorId:distId, receiverName:dist?.name||'',
+    receiverTRN:val('inv-buyer-trn')||null,
+    dateTimeIssued:val('inv-date')+'T00:00:00Z',
+    lines:JSON.stringify(lines),
+    totalAmount:String(subTotal), vatAmount:String(vatTotal),
+    etaStatus:'draft', uuid:null, submittedAt:null
+  });
+  closeModal(); go('einvoice');
+}
+
+async function submitEInvoice(id){
+  const inv=getById('eInvoices',id);if(!inv)return;
+  const cfg=JSON.parse(localStorage.getItem('eta_config')||'{}');
+  if(!cfg.clientId)return alert('يرجى إعداد بيانات ETA أولاً من زر ⚙️ إعدادات ETA');
+  try{
+    update('eInvoices',id,{etaStatus:'submitting'});
+    go('einvoice');
+    // Get token
+    const {token} = await getETAToken();
+    // Build ETA document
+    const lines=JSON.parse(inv.lines||'[]');
+    const doc = buildETADocument(inv, lines, cfg);
+    // Submit
+    const r = await fetch(`${cfg.apiServerUrl}/api/v1/documentsubmissions`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':`Bearer ${token}`},
+      body: JSON.stringify({documents:[doc]})
+    });
+    const result = await r.json();
+    if(r.ok && result.acceptedDocuments?.length>0){
+      const accepted=result.acceptedDocuments[0];
+      update('eInvoices',id,{
+        etaStatus:'submitted',
+        uuid:accepted.uuid,
+        longId:accepted.longId,
+        submittedAt:new Date().toISOString()
+      });
+      alert(`✅ تم إرسال الفاتورة بنجاح!\nUUID: ${accepted.uuid}`);
+    } else {
+      const rejected=result.rejectedDocuments?.[0];
+      const err=rejected?.error?.details?.[0]?.message||JSON.stringify(result);
+      update('eInvoices',id,{etaStatus:'rejected',errorMsg:err});
+      alert(`❌ رُفضت الفاتورة:\n${err}`);
+    }
+    go('einvoice');
+  } catch(e){
+    update('eInvoices',id,{etaStatus:'draft'});
+    alert('❌ خطأ في الإرسال: '+e.message);
+    go('einvoice');
+  }
+}
+
+async function checkEInvoiceStatus(uuid){
+  try{
+    const {token,cfg}=await getETAToken();
+    const r=await fetch(`${cfg.apiServerUrl}/api/v1/documents/${uuid}/details`,{
+      headers:{'Authorization':`Bearer ${token}`}
+    });
+    const data=await r.json();
+    alert(`حالة الفاتورة: ${data.status||'غير محدد'}\nUUID: ${uuid}`);
+  }catch(e){ alert('❌ خطأ: '+e.message); }
+}
+
+function buildETADocument(inv, lines, cfg){
+  return {
+    issuer:{
+      address:{branchID:'0',country:'EG',governate:'Cairo',regionCity:'Cairo',street:cfg.address||'',buildingNumber:'1',postalCode:'11511',floor:'0',room:'0',landmark:'',additionalInformation:''},
+      type:'B',id:cfg.taxRegNumber||'',name:cfg.taxpayerName||''
+    },
+    receiver:{
+      address:{country:'EG',governate:'Cairo',regionCity:'Cairo',street:'',buildingNumber:'1'},
+      type:'B',id:inv.receiverTRN||'000000000',name:inv.receiverName||''
+    },
+    documentType:'I', documentTypeVersion:'1.0',
+    dateTimeIssued:inv.dateTimeIssued||new Date().toISOString(),
+    taxpayerActivityCode:'4669',
+    internalID:inv.internalId||'INV-001',
+    invoiceLines: lines.map((l,idx)=>{
+      const prod=getById('products',l.productId);
+      const unitPrice=Number(l.unitPrice||0);
+      const qty=Number(l.quantity||1);
+      const total=unitPrice*qty;
+      const vatAmt=l.taxable?total*(Number(l.vatRate||14)/100):0;
+      return {
+        description:prod?.name||'منتج دوائي',
+        itemType:'EGS',itemCode:prod?.id?`EGS-${prod.id.toString().padStart(6,'0')}`:'EGS-000001',
+        unitType:'EA',quantity:qty,
+        internalCode:`P${idx+1}`,
+        salesTotal:total,
+        total:total+vatAmt,
+        valueDifference:0,totalTaxableFees:0,
+        netTotal:total,itemsDiscount:0,
+        unitValue:{currencySold:'EGP',amountEGP:unitPrice},
+        taxableItems:l.taxable?[{
+          taxType:'T1',amount:vatAmt,subType:'V009',rate:Number(l.vatRate||14)
+        }]:[]
+      };
+    }),
+    taxTotals:[{taxType:'T1',amount:Number(inv.vatAmount||0)}],
+    totalDiscountAmount:0, totalSalesAmount:Number(inv.totalAmount||0),
+    netAmount:Number(inv.totalAmount||0),
+    totalAmount:Number(inv.totalAmount||0)+Number(inv.vatAmount||0),
+    extraDiscountAmount:0, totalItemsDiscountAmount:0
+  };
+}
+
+// ════════════════════════════════════════════════════════════════
+// TAX MODULE — الضرائب العامة والمصاريف الضريبية
+// ════════════════════════════════════════════════════════════════
+
+PAGES.taxes = function(){
+  const taxLines = getAll('taxLines');
+  const totalTax = taxLines.reduce((s,t)=>s+Number(t.amount||0),0);
+  const paid=taxLines.filter(t=>t.status==='مدفوع').reduce((s,t)=>s+Number(t.amount||0),0);
+  const pending=taxLines.filter(t=>t.status==='معلق').reduce((s,t)=>s+Number(t.amount||0),0);
+  setPage('الضرائب العامة','حسابات الضريبة على الدخل والتكاليف الضريبية',
+    `<button class="btn btn-green" onclick="addTaxLine()">${ic.plus} إضافة بند ضريبي</button>`,
+    `<div class="stats-grid g3">
+      <div class="stat-card"><div class="lbl">إجمالي الالتزامات الضريبية</div><div class="val text-red">${fmt(totalTax)} ج.م</div></div>
+      <div class="stat-card"><div class="lbl">مدفوع</div><div class="val text-green">${fmt(paid)} ج.م</div></div>
+      <div class="stat-card"><div class="lbl">معلق للسداد</div><div class="val text-amber">${fmt(pending)} ج.م</div></div>
+    </div>
+    <div class="card">${tbl(['نوع الضريبة','الوصف','المبلغ (ج.م)','الفترة الضريبية','تاريخ الاستحقاق','الحالة',''],
+      taxLines.map(t=>tr(
+        badge(t.taxType==='income'?'direct':t.taxType==='stamp'?'indirect':'pending'),
+        `<strong>${t.description}</strong>`,
+        `<span class="text-red fw7">${fmt(t.amount)} ج.م</span>`,
+        t.period||'-', t.dueDate||'-',
+        badge(t.status==='مدفوع'?'received':t.status==='معلق'?'pending':'cancelled'),
+        `<div class="action-bar">
+          ${t.status==='معلق'?`<button class="btn btn-green btn-sm" onclick="markTaxPaid(${t.id})">✅ تأكيد السداد</button>`:''}
+          <button class="icon-btn del" onclick="if(confirm('حذف؟')){remove('taxLines',${t.id});go('taxes')}">${ic.del}</button>
+        </div>`
+      ))
+    )}</div>`);
+};
+
+function addTaxLine(){
+  showModal(modal('إضافة بند ضريبي',`
+    ${fg('نوع الضريبة *',sel('tx-type',[
+      {v:'income',l:'ضريبة دخل / أرباح'},
+      {v:'vat',l:'ضريبة قيمة مضافة (VAT)'},
+      {v:'stamp',l:'ضريبة دمغة'},
+      {v:'withholding',l:'ضريبة خصم وإضافة'},
+      {v:'other',l:'أخرى'}
+    ],'income'))}
+    ${fg('الوصف *',inp('tx-desc'))}
+    <div class="form-row">
+      ${fg('المبلغ (ج.م) *',inp('tx-amount','number'))}
+      ${fg('الفترة الضريبية',inp('tx-period','text','','مثال: يناير 2026'))}
+    </div>
+    <div class="form-row">
+      ${fg('تاريخ الاستحقاق',inp('tx-due','date'))}
+      ${fg('الحالة',sel('tx-status',[{v:'معلق',l:'معلق'},{v:'مدفوع',l:'مدفوع'}],'معلق'))}
+    </div>
+    ${fg('ملاحظات',inp('tx-notes'))}
+    <div class="form-actions">
+      <button class="btn btn-green" onclick="saveTaxLine()">💾 حفظ</button>
+      <button class="btn btn-ghost" onclick="closeModal()">إلغاء</button>
+    </div>`));
+}
+function saveTaxLine(){
+  const desc=val('tx-desc'),amount=val('tx-amount');
+  if(!desc||!amount)return alert('يرجى تعبئة الحقول الإلزامية');
+  insert('taxLines',{taxType:val('tx-type'),description:desc,amount,period:val('tx-period')||null,dueDate:val('tx-due')||null,status:val('tx-status'),notes:val('tx-notes')||null});
+  closeModal();go('taxes');
+}
+function markTaxPaid(id){
+  if(!confirm('تأكيد سداد هذا البند الضريبي؟'))return;
+  update('taxLines',id,{status:'مدفوع',paidAt:new Date().toISOString()});
+  go('taxes');
+}
+
+// ════════════════════════════════════════════════════════════════
+// AI ASSISTANT — مساعد ذكي داخل البرنامج
+// ════════════════════════════════════════════════════════════════
+let _aiOpen = false;
+
+function toggleAI(){
+  const panel = document.getElementById('ai-panel');
+  if(!panel)return;
+  _aiOpen = !_aiOpen;
+  panel.style.display = _aiOpen ? 'flex' : 'none';
+  if(_aiOpen){ document.getElementById('ai-input')?.focus(); }
+}
+
+async function sendAIMessage(){
+  const input = document.getElementById('ai-input');
+  const msg = input?.value?.trim();
+  if(!msg) return;
+  input.value = '';
+  appendAIMsg(msg,'user');
+  appendAIMsg('جاري التحليل...','assistant loading');
+
+  // Build context from DB
+  const dels=getAll('deliveryOrders'),exps=getAll('expenses'),pos=getAll('productionOrders'),inv=getAll('inventory');
+  const rev=dels.filter(d=>d.status==='delivered').reduce((s,d)=>s+Number(d.totalAmount||0),0);
+  const dc=exps.filter(e=>e.expenseType==='direct').reduce((s,e)=>s+Number(e.amount||0),0);
+  const ic2=exps.filter(e=>e.expenseType==='indirect').reduce((s,e)=>s+Number(e.amount||0),0);
+  const pc=pos.reduce((s,p)=>s+Number(p.totalCost||0),0);
+  const np=rev-dc-ic2-pc;
+  const ivVal=inv.reduce((s,i)=>s+Number(i.quantity||0)*Number(i.unitCost||0),0);
+
+  const context = `أنت مساعد مالي وإداري متخصص في شركة دوائية مصرية. هذه بيانات الشركة الحالية:
+- الشركة: ${document.getElementById('logo-name')?.textContent||'غير محدد'}
+- إجمالي الإيرادات: ${fmt(rev)} ج.م
+- تكاليف الإنتاج: ${fmt(pc)} ج.م
+- تكاليف مباشرة: ${fmt(dc)} ج.م
+- تكاليف غير مباشرة: ${fmt(ic2)} ج.م
+- صافي الربح: ${fmt(np)} ج.م
+- قيمة المخزون: ${fmt(ivVal)} ج.م
+- عدد المنتجات: ${getAll('products').length}
+- عدد الموظفين النشطين: ${getAll('employees').filter(e=>e.status==='active').length}
+- عدد الموزعين: ${getAll('distributors').length}
+- الذمم المعلقة: ${getAll('receivables').filter(r=>r.status==='معلق').length} ذمة
+- فواتير إلكترونية: ${getAll('eInvoices').length} فاتورة
+أجب بالعربية بشكل مختصر ومفيد. إذا سأل عن بيانات غير متوفرة قل ذلك بوضوح.`;
+
+  try{
+    const r = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body: JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1000,
+        system: context,
+        messages:[{role:'user',content:msg}]
+      })
+    });
+    const data = await r.json();
+    const reply = data.content?.[0]?.text || 'عذراً، لم أتمكن من الإجابة.';
+    removeLoadingMsg();
+    appendAIMsg(reply,'assistant');
+  } catch(e){
+    removeLoadingMsg();
+    appendAIMsg('❌ خطأ في الاتصال — تأكد من الاتصال بالإنترنت.','assistant');
+  }
+}
+
+function appendAIMsg(text, role){
+  const chat = document.getElementById('ai-chat');
+  if(!chat)return;
+  const div = document.createElement('div');
+  div.className = 'ai-msg ai-'+role.replace(' loading','');
+  if(role.includes('loading')) div.id = 'ai-loading';
+  div.textContent = text;
+  chat.appendChild(div);
+  chat.scrollTop = chat.scrollHeight;
+}
+function removeLoadingMsg(){
+  const el = document.getElementById('ai-loading');
+  if(el) el.remove();
+}
+
+
 // renderNav/go called by coEnter() after company is selected
 </script>
+
+<!-- ══ AI ASSISTANT PANEL ══ -->
+<button id="ai-fab" onclick="toggleAI()" title="المساعد الذكي">🤖</button>
+<div id="ai-panel">
+  <div class="ai-panel-head">
+    <span>🤖 المساعد الذكي</span>
+    <button class="ai-panel-close" onclick="toggleAI()">×</button>
+  </div>
+  <div id="ai-chat">
+    <div class="ai-msg ai-assistant">
+      مرحباً! أنا المساعد الذكي لنظام ERP الدوائي. يمكنني مساعدتك في تحليل البيانات، شرح التقارير، وتقديم اقتراحات. كيف يمكنني مساعدتك؟
+    </div>
+  </div>
+  <div class="ai-panel-input">
+    <input id="ai-input" placeholder="اسألني عن بياناتك..." 
+           onkeydown="if(event.key==='Enter')sendAIMessage()">
+    <button class="ai-send-btn" onclick="sendAIMessage()">إرسال</button>
+  </div>
+</div>
+
 </body>
 </html>
