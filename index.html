@@ -360,7 +360,7 @@ const defaultDB = {
   registrations:[], distributors:[], deliveryOrders:[], deliveryItems:[],
   expenses:[], employees:[], budgetLines:[], campaigns:[], salesTargets:[],
   receivables:[], payrollRuns:[], purchaseOrders:[], qualityChecks:[],
-  returns:[], contracts:[], assets:[], eInvoices:[], taxLines:[],
+  returns:[], contracts:[], assets:[], eInvoices:[], taxLines:[], batchMaterials:[],
   _seq:{}
 };
 
@@ -1058,7 +1058,7 @@ function addProduction(){
     <div class="form-row">${fg('المنتج *',sel('po-prod',pOpts))}${fg('المصنع *',sel('po-cmo',cOpts))}</div>
     <div class="form-row">${fg('رقم الأمر',inp('po-num'))}${fg('تاريخ الأمر',inp('po-date','date',today()))}</div>
     <div class="form-row">${fg('الكمية *',inp('po-qty','number'))}${fg('تكلفة الوحدة (ج.م)',inp('po-ucost','number'))}</div>
-    <div class="form-row">${fg('إجمالي التكلفة (ج.م)',inp('po-tcost','number'))}${fg('الموعد المتوقع',inp('po-exp','date'))}</div>
+    <div class="form-row">${fg('تكلفة CMO (ج.م)',inp('po-tcost','number','','تكلفة المصنع فقط بدون المواد'))}${fg('الموعد المتوقع',inp('po-exp','date'))}</div>
     ${fg('الحالة',sel('po-status',[{v:'pending',l:'قيد الانتظار'},{v:'in_production',l:'في الإنتاج'},{v:'received',l:'مستلم'},{v:'cancelled',l:'ملغي'}],'pending'))}
     <div class="form-actions"><button class="btn btn-green" onclick="saveProduction()">💾 حفظ</button><button class="btn btn-ghost" onclick="closeModal()">إلغاء</button></div>
   `));
@@ -1076,7 +1076,7 @@ function saveProduction(id){
   const qty=numVal('po-qty'); if(!qty) return alert('يرجى تحديد الكمية');
   if(!id&&(!numVal('po-prod')||!numVal('po-cmo'))) return alert('يرجى اختيار المنتج والمصنع');
   if(id) update('productionOrders',id,{quantity:qty,unitCost:val('po-ucost')||null,totalCost:val('po-tcost')||null,expectedDate:val('po-exp')||null,status:val('po-status')});
-  else insert('productionOrders',{productId:numVal('po-prod'),cmoId:numVal('po-cmo'),orderNumber:val('po-num')||null,quantity:qty,unitCost:val('po-ucost')||null,totalCost:val('po-tcost')||null,orderDate:val('po-date')||null,expectedDate:val('po-exp')||null,status:val('po-status')});
+  else insert('productionOrders',{productId:numVal('po-prod'),cmoId:numVal('po-cmo'),orderNumber:val('po-num')||null,quantity:qty,unitCost:val('po-ucost')||null,cmoBaseCost:val('po-tcost')||'0',totalCost:val('po-tcost')||null,orderDate:val('po-date')||null,expectedDate:val('po-exp')||null,status:val('po-status')});
   closeModal(); go('production');
 }
 
@@ -2490,6 +2490,519 @@ function removeLoadingMsg(){
   if(el) el.remove();
 }
 
+
+// ════════════════════════════════════════════════════════════════
+// BATCH COSTING SYSTEM — ربط التشغيلة بالمواد وحساب التكلفة
+// ════════════════════════════════════════════════════════════════
+// batchMaterials: رابط بين أمر الإنتاج والمواد المستخدمة
+// كل سطر يحفظ: المادة + الكمية + سعر الوحدة وقت الاستخدام
+
+// ── Override production page with full batch costing ──────────
+PAGES.production = function(){
+  const rows = getAll('productionOrders');
+  const batchMats = getAll('batchMaterials');
+
+  // حساب تكلفة كل تشغيلة من المواد
+  const calcBatchCost = (orderId) => {
+    const mats = batchMats.filter(m => m.productionOrderId === orderId);
+    return mats.reduce((s, m) => s + Number(m.quantity||0) * Number(m.unitCostAtTime||0), 0);
+  };
+
+  const totalMatCost = rows.reduce((s, o) => s + calcBatchCost(o.id), 0);
+  const totalCMOCost = rows.reduce((s, o) => s + Number(o.totalCost||0), 0);
+  const totalProdCost = totalMatCost + totalCMOCost;
+
+  setPage('أوامر الإنتاج — تكلفة الدفعة',
+    `إجمالي تكلفة المواد: ${fmt(totalMatCost)} ج.م | CMO: ${fmt(totalCMOCost)} ج.م | الإجمالي: ${fmt(totalProdCost)} ج.م`,
+    `<button class="btn btn-green" onclick="addProduction()">${ic.plus} أمر إنتاج جديد</button>`,
+    `<div class="stats-grid g4">
+      <div class="stat-card"><div class="lbl">إجمالي التشغيلات</div><div class="val">${rows.length}</div></div>
+      <div class="stat-card"><div class="lbl">تكلفة المواد الكلية</div><div class="val text-red">${fmt(totalMatCost)} ج.م</div></div>
+      <div class="stat-card"><div class="lbl">تكلفة CMO الكلية</div><div class="val text-amber">${fmt(totalCMOCost)} ج.م</div></div>
+      <div class="stat-card"><div class="lbl">إجمالي تكاليف الإنتاج</div><div class="val text-blue">${fmt(totalProdCost)} ج.م</div></div>
+    </div>
+    <div class="tabs">
+      <button class="tab active" data-group="prod" data-tab="prod-orders">التشغيلات</button>
+      <button class="tab" data-group="prod" data-tab="prod-compare">مقارنة التكاليف</button>
+    </div>
+
+    <div id="prod-orders" class="tab-pane" data-group="prod">
+      <div class="card">${tbl(
+        ['رقم الأمر','المنتج','المصنع','الكمية','تكلفة المواد','تكلفة CMO','إجمالي التكلفة','تكلفة الوحدة','تاريخ الأمر','الحالة',''],
+        rows.map(o => {
+          const matCost = calcBatchCost(o.id);
+          const cmoCost = Number(o.totalCost||0);
+          const total = matCost + cmoCost;
+          const unitCost = o.quantity ? total / Number(o.quantity) : 0;
+          const prod = getAll('products').find(p => p.id === o.productId);
+          const cmo  = getAll('cmos').find(c => c.id === o.cmoId);
+          const mats = batchMats.filter(m => m.productionOrderId === o.id);
+          return tr(
+            `<code>${o.orderNumber||'PO-'+o.id}</code>`,
+            `<strong>${prod?.name||'-'}</strong>`,
+            cmo?.name||'-',
+            fmtN(o.quantity),
+            matCost > 0
+              ? `<span class="text-red fw7">${fmt(matCost)} ج.م</span><br><span style="font-size:11px;color:var(--muted)">${mats.length} مادة</span>`
+              : `<button class="btn btn-ghost btn-sm" onclick="addBatchMaterials(${o.id})">+ إضافة مواد</button>`,
+            cmoCost > 0 ? `<span class="text-amber fw7">${fmt(cmoCost)} ج.م</span>` : '—',
+            total > 0 ? `<span class="text-blue fw7">${fmt(total)} ج.م</span>` : '—',
+            unitCost > 0 ? `<span class="fw7">${fmt(unitCost)} ج.م</span>` : '—',
+            o.orderDate||'-',
+            badge(o.status||'pending'),
+            `<div class="action-bar">
+              <button class="icon-btn" style="color:var(--blue)" onclick="addBatchMaterials(${o.id})" title="إدارة مواد التشغيلة">🧪</button>
+              <button class="icon-btn edit" onclick="editProduction(${o.id})">${ic.edit}</button>
+              <button class="icon-btn del" onclick="if(confirm('حذف؟')){removeBatchOrder(${o.id})}">${ic.del}</button>
+            </div>`
+          );
+        })
+      )}</div>
+    </div>
+
+    <div id="prod-compare" class="tab-pane" data-group="prod" style="display:none">
+      <div class="card">${tbl(
+        ['المنتج','رقم الأمر','تاريخ الأمر','الكمية','تكلفة مواد/وحدة','تكلفة CMO/وحدة','إجمالي/وحدة','سعر البيع','هامش الربح %','تغير عن السابق'],
+        (() => {
+          // Group by product, sort by date
+          const byProd = {};
+          rows.forEach(o => {
+            if(!byProd[o.productId]) byProd[o.productId] = [];
+            byProd[o.productId].push(o);
+          });
+          const result = [];
+          Object.entries(byProd).forEach(([prodId, orders]) => {
+            const prod = getAll('products').find(p => p.id === Number(prodId));
+            const sorted = orders.sort((a,b) => (a.orderDate||'') > (b.orderDate||'') ? 1 : -1);
+            sorted.forEach((o, idx) => {
+              const matCost = calcBatchCost(o.id);
+              const cmoCost = Number(o.totalCost||0);
+              const total = matCost + cmoCost;
+              const qty = Number(o.quantity)||1;
+              const unitMat = matCost / qty;
+              const unitCMO = cmoCost / qty;
+              const unitTotal = total / qty;
+              const sellPrice = Number(prod?.sellingPrice||0);
+              const margin = sellPrice > 0 ? ((sellPrice - unitTotal) / sellPrice * 100) : 0;
+              // Compare with previous batch
+              let changeCell = '—';
+              if(idx > 0) {
+                const prev = sorted[idx-1];
+                const prevMat = calcBatchCost(prev.id);
+                const prevCMO = Number(prev.totalCost||0);
+                const prevTotal = (prevMat + prevCMO) / (Number(prev.quantity)||1);
+                const diff = unitTotal - prevTotal;
+                const diffPct = prevTotal > 0 ? (diff/prevTotal*100) : 0;
+                const arrow = diff > 0 ? '🔴 ↑' : diff < 0 ? '🟢 ↓' : '⚪ ─';
+                changeCell = `<span class="${diff>0?'text-red':diff<0?'text-green':'text-muted'} fw7">${arrow} ${fmt(Math.abs(diff))} ج.م (${Math.abs(diffPct).toFixed(1)}%)</span>`;
+              }
+              result.push(tr(
+                `<strong>${prod?.name||'-'}</strong>`,
+                `<code>${o.orderNumber||'PO-'+o.id}</code>`,
+                o.orderDate||'-',
+                fmtN(qty),
+                unitMat > 0 ? fmt(unitMat)+' ج.م' : '—',
+                unitCMO > 0 ? fmt(unitCMO)+' ج.م' : '—',
+                `<span class="text-blue fw7">${fmt(unitTotal)} ج.م</span>`,
+                sellPrice ? fmt(sellPrice)+' ج.م' : '—',
+                `<span class="${margin>=20?'text-green':margin>=5?'text-amber':'text-red'} fw7">${margin.toFixed(1)}%</span>`,
+                changeCell
+              ));
+            });
+          });
+          return result;
+        })()
+      )}</div>
+    </div>`);
+  initTabs();
+};
+
+// ── حذف أمر إنتاج مع كل موادّه ─────────────────────────────
+function removeBatchOrder(id){
+  if(!confirm('حذف أمر الإنتاج وكل المواد المرتبطة به؟')) return;
+  remove('productionOrders', id);
+  // حذف كل مواد هذه التشغيلة
+  const toRemove = getAll('batchMaterials').filter(m => m.productionOrderId === id);
+  toRemove.forEach(m => remove('batchMaterials', m.id));
+  go('production');
+}
+
+// ── إدارة مواد التشغيلة ─────────────────────────────────────
+function addBatchMaterials(productionOrderId){
+  const order = getById('productionOrders', productionOrderId);
+  if(!order) return;
+  const prod = getById('products', order.productId);
+  const existingMats = getAll('batchMaterials').filter(m => m.productionOrderId === productionOrderId);
+  const allMats = getAll('materials');
+  const raw = allMats.filter(m => m.materialType === 'raw_material');
+  const pkg = allMats.filter(m => m.materialType === 'packaging');
+
+  // لو فيه BOM للمنتج ده، اقترح الكميات
+  const bom = (getAll('productBOM')||[]).filter(b => b.productId === order.productId);
+
+  const existingRows = existingMats.map((m, i) => {
+    const mat = getById('materials', m.materialId);
+    return `<tr>
+      <td>${mat?.name||'-'}</td>
+      <td>${badge(mat?.materialType||'raw_material')}</td>
+      <td><span class="fw7">${fmtN(m.quantity)} ${mat?.unit||''}</span></td>
+      <td><span class="text-blue fw7">${fmt(m.unitCostAtTime)} ج.م</span></td>
+      <td><span class="text-red fw7">${fmt(Number(m.quantity)*Number(m.unitCostAtTime))} ج.م</span></td>
+      <td><span class="text-muted fz12">${m.receiptBatch||'—'}</span></td>
+      <td><button class="icon-btn del" onclick="removeBatchMaterial(${m.id}, ${productionOrderId})">${ic.del}</button></td>
+    </tr>`;
+  }).join('');
+
+  // مجموع التكلفة الحالية
+  const currentTotal = existingMats.reduce((s,m)=>s+Number(m.quantity||0)*Number(m.unitCostAtTime||0),0);
+
+  showModal(modal(
+    `🧪 مواد التشغيلة — ${prod?.name||''} (${order.orderNumber||'PO-'+order.id})`,
+    `<div style="margin-bottom:14px;padding:12px;background:var(--green-bg);border:1px solid rgba(46,160,67,.3);border-radius:8px;font-size:13px">
+      <div style="display:flex;justify-content:space-between">
+        <span>الكمية المنتجة: <strong>${fmtN(order.quantity)}</strong> وحدة</span>
+        <span>إجمالي تكلفة المواد: <strong class="text-red">${fmt(currentTotal)} ج.م</strong></span>
+        <span>تكلفة مواد/وحدة: <strong class="text-blue">${order.quantity?fmt(currentTotal/Number(order.quantity)):'-'} ج.م</strong></span>
+      </div>
+    </div>
+
+    ${existingMats.length ? `
+    <div style="margin-bottom:14px">
+      <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase">المواد المضافة</div>
+      <div class="tbl-wrap"><table style="font-size:12px">
+        <thead><tr><th>المادة</th><th>النوع</th><th>الكمية</th><th>سعر الوقت</th><th>الإجمالي</th><th>رقم دفعة المادة</th><th></th></tr></thead>
+        <tbody>${existingRows}</tbody>
+      </table></div>
+    </div>` : ''}
+
+    <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase">إضافة مادة جديدة</div>
+    <div class="fg"><label>المادة *</label>
+      <select id="bm-mat">
+        <option value="">اختر مادة...</option>
+        <optgroup label="🧪 مواد خام">${raw.map(m=>{
+          const bomEntry = bom.find(b=>b.materialId===m.id);
+          const suggestedQty = bomEntry ? (Number(bomEntry.quantityPerUnit||0)*Number(order.quantity||0)).toFixed(2) : '';
+          return `<option value="${m.id}" data-unit="${m.unit}" data-cost="${m.unitCost||0}" data-suggested="${suggestedQty}">${m.name} (${m.unit}) — سعر: ${fmt(m.unitCost||0)} ج.م — مخزون: ${fmtN(m.currentStock||0)}</option>`;
+        }).join('')}</optgroup>
+        <optgroup label="📦 مواد تغليف">${pkg.map(m=>{
+          const bomEntry = bom.find(b=>b.materialId===m.id);
+          const suggestedQty = bomEntry ? (Number(bomEntry.quantityPerUnit||0)*Number(order.quantity||0)).toFixed(2) : '';
+          return `<option value="${m.id}" data-unit="${m.unit}" data-cost="${m.unitCost||0}" data-suggested="${suggestedQty}">${m.name} (${m.unit}) — سعر: ${fmt(m.unitCost||0)} ج.م — مخزون: ${fmtN(m.currentStock||0)}</option>`;
+        }).join('')}</optgroup>
+      </select>
+    </div>
+
+    <div id="bm-selected-info" style="display:none;padding:10px;background:rgba(56,139,253,.08);border:1px solid rgba(56,139,253,.2);border-radius:8px;font-size:12px;margin-bottom:12px"></div>
+
+    <div class="form-row">
+      ${fg('الكمية المستخدمة *', inp('bm-qty', 'number', '', 'مثال: 50'))}
+      ${fg('سعر الوحدة وقت الاستخدام (ج.م) *', inp('bm-cost', 'number', '', 'السعر وقت الشراء'))}
+    </div>
+    <div class="form-row">
+      ${fg('رقم دفعة المادة الخام', inp('bm-batch', 'text', '', 'مثال: BT-2026-001'))}
+      ${fg('ملاحظات', inp('bm-notes', 'text', '', 'اختياري'))}
+    </div>
+    <div id="bm-line-total" style="font-size:14px;font-weight:700;color:var(--green-light);margin-bottom:12px"></div>
+
+    <div class="form-actions">
+      <button class="btn btn-green" onclick="saveBatchMaterial(${productionOrderId})">➕ إضافة المادة</button>
+      <button class="btn btn-ghost" onclick="closeModal()">إغلاق</button>
+      ${bom.length > 0 ? `<button class="btn btn-ghost" style="color:var(--blue);border-color:var(--blue)" onclick="autoFillFromBOM(${productionOrderId},${order.quantity})">⚡ ملء تلقائي من BOM</button>` : ''}
+    </div>`
+  ));
+
+  // Listen for material selection to auto-fill price and suggest qty
+  setTimeout(() => {
+    const matSel = document.getElementById('bm-mat');
+    const qtySel = document.getElementById('bm-qty');
+    const costInp = document.getElementById('bm-cost');
+    const totalDiv = document.getElementById('bm-line-total');
+    const infoDiv = document.getElementById('bm-selected-info');
+
+    const updateTotal = () => {
+      const q = Number(qtySel?.value||0), c = Number(costInp?.value||0);
+      if(totalDiv) totalDiv.textContent = q && c ? `إجمالي هذه المادة: ${fmt(q*c)} ج.م` : '';
+    };
+
+    if(matSel) {
+      matSel.addEventListener('change', function(){
+        const opt = this.options[this.selectedIndex];
+        const cost = opt.dataset.cost || '';
+        const unit = opt.dataset.unit || '';
+        const suggested = opt.dataset.suggested || '';
+        if(costInp) costInp.value = cost;
+        if(qtySel && suggested) qtySel.value = suggested;
+        if(infoDiv && cost) {
+          infoDiv.style.display = 'block';
+          infoDiv.innerHTML = `💡 السعر الحالي في المخزون: <strong>${fmt(cost)} ج.م/${unit}</strong>${suggested?` | الكمية المقترحة من BOM: <strong>${suggested} ${unit}</strong>`:''}`;
+        }
+        updateTotal();
+      });
+    }
+    if(qtySel) qtySel.addEventListener('input', updateTotal);
+    if(costInp) costInp.addEventListener('input', updateTotal);
+  }, 100);
+}
+
+function saveBatchMaterial(productionOrderId){
+  const matId = numVal('bm-mat');
+  const qty   = numVal('bm-qty');
+  const cost  = numVal('bm-cost');
+  if(!matId || !qty || !cost) return alert('يرجى اختيار المادة وتحديد الكمية والسعر');
+
+  const mat = getById('materials', matId);
+
+  // Check stock
+  if(mat && Number(mat.currentStock||0) < qty){
+    if(!confirm(`⚠️ المخزون المتاح (${fmtN(mat.currentStock||0)} ${mat.unit}) أقل من الكمية المطلوبة (${fmtN(qty)} ${mat.unit})\nهل تريد المتابعة؟`)) return;
+  }
+
+  insert('batchMaterials', {
+    productionOrderId,
+    materialId: matId,
+    materialName: mat?.name||'',
+    materialType: mat?.materialType||'raw_material',
+    unit: mat?.unit||'',
+    quantity: qty,
+    unitCostAtTime: cost,       // السعر وقت الاستخدام — الأهم
+    totalCost: qty * cost,
+    receiptBatch: val('bm-batch')||null,
+    notes: val('bm-notes')||null,
+    recordedAt: new Date().toISOString()
+  });
+
+  // Deduct from material stock
+  if(mat) {
+    const newStock = Number(mat.currentStock||0) - qty;
+    update('materials', matId, { currentStock: String(Math.max(0, newStock)) });
+  }
+
+  // Update production order total cost
+  const allMats = getAll('batchMaterials').filter(m => m.productionOrderId === productionOrderId);
+  const matTotal = allMats.reduce((s,m)=>s+Number(m.quantity||0)*Number(m.unitCostAtTime||0),0);
+  const order = getById('productionOrders', productionOrderId);
+  if(order) {
+    const cmoTotal = Number(order.cmoBaseCost||0);
+    const grandTotal = matTotal + cmoTotal;
+    const unitCost = order.quantity ? grandTotal / Number(order.quantity) : 0;
+    update('productionOrders', productionOrderId, {
+      materialsCost: String(matTotal),
+      totalCost: String(grandTotal),
+      unitCost: String(unitCost)
+    });
+  }
+
+  closeModal();
+  addBatchMaterials(productionOrderId); // reopen to add more
+}
+
+function removeBatchMaterial(id, productionOrderId){
+  if(!confirm('حذف هذه المادة من التشغيلة؟')) return;
+  const bm = getById('batchMaterials', id);
+  // Return stock
+  if(bm) {
+    const mat = getById('materials', bm.materialId);
+    if(mat) update('materials', bm.materialId, { currentStock: String(Number(mat.currentStock||0)+Number(bm.quantity||0)) });
+  }
+  remove('batchMaterials', id);
+  closeModal();
+  addBatchMaterials(productionOrderId);
+}
+
+// ── Auto-fill from BOM ───────────────────────────────────────
+function autoFillFromBOM(productionOrderId, orderQty){
+  const order = getById('productionOrders', productionOrderId);
+  if(!order) return;
+  const bom = (getAll('productBOM')||[]).filter(b => b.productId === order.productId);
+  if(!bom.length) return alert('لا يوجد BOM محدد لهذا المنتج');
+
+  let added = 0;
+  bom.forEach(b => {
+    const mat = getById('materials', b.materialId);
+    if(!mat) return;
+    const qty = Number(b.quantityPerUnit||0) * Number(orderQty||0);
+    const cost = Number(mat.unitCost||0);
+    if(!qty || !cost) return;
+    // Check not already added
+    const exists = getAll('batchMaterials').find(m => m.productionOrderId === productionOrderId && m.materialId === b.materialId);
+    if(exists) return;
+    insert('batchMaterials', {
+      productionOrderId,
+      materialId: b.materialId,
+      materialName: mat.name,
+      materialType: mat.materialType,
+      unit: mat.unit||'',
+      quantity: qty,
+      unitCostAtTime: cost,
+      totalCost: qty * cost,
+      receiptBatch: null,
+      notes: 'ملء تلقائي من BOM',
+      recordedAt: new Date().toISOString()
+    });
+    added++;
+  });
+
+  // Update costs
+  const allMats = getAll('batchMaterials').filter(m => m.productionOrderId === productionOrderId);
+  const matTotal = allMats.reduce((s,m)=>s+Number(m.quantity||0)*Number(m.unitCostAtTime||0),0);
+  const cmoTotal = Number(order.cmoBaseCost||0);
+  const grandTotal = matTotal + cmoTotal;
+  const unitCost = order.quantity ? grandTotal / Number(order.quantity) : 0;
+  update('productionOrders', productionOrderId, {
+    materialsCost: String(matTotal),
+    totalCost: String(grandTotal),
+    unitCost: String(unitCost)
+  });
+
+  closeModal();
+  alert(`✅ تم إضافة ${added} مادة من BOM تلقائياً`);
+  addBatchMaterials(productionOrderId);
+}
+
+// ── BOM Management Page (وصفة الإنتاج) ──────────────────────
+PAGES.bom = function(){
+  const products = getAll('products');
+  const bom = getAll('productBOM')||[];
+  const mats = getAll('materials');
+
+  setPage('وصفة الإنتاج (BOM)','تحديد المواد والكميات المستخدمة لكل منتج',
+    `<button class="btn btn-green" onclick="addBOMEntry()">${ic.plus} إضافة وصفة</button>`,
+    `<div class="alert alert-warn">${ic.warn}<div><strong>ملاحظة:</strong> الوصفة هي الكميات القياسية للوحدة — يمكن تعديلها يدوياً عند كل تشغيلة</div></div>
+    <div class="tabs">
+      ${products.filter(p => bom.some(b=>b.productId===p.id)).map(p=>
+        `<button class="tab${products.filter(pr=>bom.some(b=>b.productId===pr.id))[0]?.id===p.id?' active':''}" data-group="bom" data-tab="bom-${p.id}">${p.name}</button>`
+      ).join('')}
+    </div>
+    ${products.filter(p => bom.some(b=>b.productId===p.id)).map((p,pi) => {
+      const pBom = bom.filter(b=>b.productId===p.id);
+      const totalPerUnit = pBom.reduce((s,b)=>{
+        const mat=getById('materials',b.materialId);
+        return s+Number(b.quantityPerUnit||0)*Number(mat?.unitCost||0);
+      },0);
+      return `<div id="bom-${p.id}" class="tab-pane" data-group="bom" ${pi>0?'style="display:none"':''}>
+        <div class="card">
+          <div class="card-head">
+            <h2>وصفة: ${p.name}</h2>
+            <span class="text-blue fw7">تكلفة مواد الوحدة القياسية: ${fmt(totalPerUnit)} ج.م</span>
+          </div>
+          ${tbl(['المادة','النوع','الوحدة','الكمية/وحدة منتج','السعر الحالي (ج.م)','تكلفة/وحدة منتج',''],
+            pBom.map(b => {
+              const mat = getById('materials', b.materialId);
+              const costPerUnit = Number(b.quantityPerUnit||0) * Number(mat?.unitCost||0);
+              return tr(
+                `<strong>${mat?.name||b.materialName||'-'}</strong>`,
+                badge(mat?.materialType||'raw_material'),
+                mat?.unit||'-',
+                `<span class="fw7">${fmtN(b.quantityPerUnit)}</span>`,
+                mat?.unitCost ? `<span class="text-blue">${fmt(mat.unitCost)} ج.م</span>` : '—',
+                `<span class="text-red fw7">${fmt(costPerUnit)} ج.م</span>`,
+                `<button class="icon-btn del" onclick="if(confirm('حذف؟')){remove('productBOM',${b.id});go('bom')}">${ic.del}</button>`
+              );
+            })
+          )}
+        </div>
+      </div>`;
+    }).join('')}
+    ${!bom.length ? '<div class="card"><div class="empty">📭 لا توجد وصفات بعد — أضف وصفة لكل منتج</div></div>' : ''}`);
+  initTabs();
+};
+
+function addBOMEntry(){
+  const pOpts = [{v:0,l:'اختر منتج...'},...getAll('products').map(p=>({v:p.id,l:p.name}))];
+  const mats = getAll('materials');
+  const raw = mats.filter(m=>m.materialType==='raw_material');
+  const pkg = mats.filter(m=>m.materialType==='packaging');
+  showModal(modal('إضافة وصفة إنتاج (BOM)',`
+    ${fg('المنتج *', sel('bom-prod', pOpts))}
+    <div class="fg"><label>المادة *</label>
+      <select id="bom-mat">
+        <option value="">اختر مادة...</option>
+        <optgroup label="🧪 مواد خام">${raw.map(m=>`<option value="${m.id}" data-unit="${m.unit}" data-cost="${m.unitCost||0}">${m.name} (${m.unit})</option>`).join('')}</optgroup>
+        <optgroup label="📦 مواد تغليف">${pkg.map(m=>`<option value="${m.id}" data-unit="${m.unit}" data-cost="${m.unitCost||0}">${m.name} (${m.unit})</option>`).join('')}</optgroup>
+      </select>
+    </div>
+    ${fg('الكمية لكل وحدة منتج *', inp('bom-qty','number','','مثال: 0.25 كجم لكل علبة'))}
+    <div id="bom-cost-preview" style="font-size:12px;color:var(--muted);margin-top:-8px;margin-bottom:12px"></div>
+    <div class="form-actions">
+      <button class="btn btn-green" onclick="saveBOMEntry()">💾 حفظ</button>
+      <button class="btn btn-ghost" onclick="closeModal()">إلغاء</button>
+    </div>`));
+
+  setTimeout(()=>{
+    const matSel = document.getElementById('bom-mat');
+    const qtyInp = document.getElementById('bom-qty');
+    const preview = document.getElementById('bom-cost-preview');
+    const update = () => {
+      const opt = matSel?.options[matSel.selectedIndex];
+      const cost = Number(opt?.dataset?.cost||0);
+      const unit = opt?.dataset?.unit||'';
+      const qty  = Number(qtyInp?.value||0);
+      if(cost && qty && preview) preview.textContent = `💡 تكلفة لكل وحدة منتج: ${fmt(cost*qty)} ج.م (${qty} ${unit} × ${fmt(cost)} ج.م)`;
+    };
+    matSel?.addEventListener('change', update);
+    qtyInp?.addEventListener('input', update);
+  },100);
+}
+
+function saveBOMEntry(){
+  const prodId = numVal('bom-prod'), matId = numVal('bom-mat'), qty = numVal('bom-qty');
+  if(!prodId||!matId||!qty) return alert('يرجى تعبئة كل الحقول');
+  const mat = getById('materials', matId);
+  insert('productBOM',{productId:prodId,materialId:matId,materialName:mat?.name||'',quantityPerUnit:qty});
+  closeModal(); go('bom');
+}
+
+// ── Override costanalysis to use actual batch costs ──────────
+PAGES.costanalysis = function(){
+  const products = getAll('products');
+  const batchMats = getAll('batchMaterials');
+  const production = getAll('productionOrders');
+
+  setPage('تحليل تكلفة المنتج','تكلفة حقيقية بناءً على أسعار المواد وقت الاستخدام','',
+    `<div class="card">${tbl(
+      ['المنتج','عدد التشغيلات','آخر تكلفة مواد/وحدة','آخر تكلفة CMO/وحدة','إجمالي التكلفة/وحدة','سعر البيع','هامش الربح','هامش %','اتجاه التكلفة'],
+      products.map(p => {
+        const pOrders = production.filter(o=>o.productId===p.id).sort((a,b)=>(a.orderDate||'')>(b.orderDate||'')?1:-1);
+        if(!pOrders.length) return tr(`<strong>${p.name}</strong>`,'0','—','—','—',p.sellingPrice?fmt(p.sellingPrice)+' ج.م':'—','—','—','—');
+
+        const last  = pOrders[pOrders.length-1];
+        const first = pOrders[0];
+        const lastQty = Number(last.quantity)||1;
+
+        const lastMatCost = batchMats.filter(m=>m.productionOrderId===last.id).reduce((s,m)=>s+Number(m.quantity||0)*Number(m.unitCostAtTime||0),0);
+        const lastCMO = Number(last.cmoBaseCost||0);
+        const lastTotal = (lastMatCost+lastCMO)/lastQty;
+        const lastMatUnit = lastMatCost/lastQty;
+        const lastCMOUnit = lastCMO/lastQty;
+
+        // Trend
+        let trend = '—';
+        if(pOrders.length > 1) {
+          const firstQty = Number(first.quantity)||1;
+          const firstMat = batchMats.filter(m=>m.productionOrderId===first.id).reduce((s,m)=>s+Number(m.quantity||0)*Number(m.unitCostAtTime||0),0);
+          const firstTotal = (firstMat+Number(first.cmoBaseCost||0))/firstQty;
+          const diff = lastTotal - firstTotal;
+          const pct = firstTotal > 0 ? (diff/firstTotal*100) : 0;
+          trend = `<span class="${diff>0?'text-red':diff<0?'text-green':'text-muted'} fw7">${diff>0?'📈':diff<0?'📉':'─'} ${pct>0?'+':''}${pct.toFixed(1)}%</span>`;
+        }
+
+        const price = Number(p.sellingPrice||0);
+        const margin = price > 0 ? ((price-lastTotal)/price*100) : 0;
+
+        return tr(
+          `<strong>${p.name}</strong>`,
+          pOrders.length,
+          lastMatUnit > 0 ? fmt(lastMatUnit)+' ج.م' : '—',
+          lastCMOUnit > 0 ? fmt(lastCMOUnit)+' ج.م' : '—',
+          `<span class="text-red fw7">${fmt(lastTotal)} ج.م</span>`,
+          price ? `<span class="text-blue fw7">${fmt(price)} ج.م</span>` : '—',
+          price && lastTotal ? `<span class="${margin>=20?'text-green':margin>=5?'text-amber':'text-red'} fw7">${fmt(price-lastTotal)} ج.م</span>` : '—',
+          `<span class="${margin>=20?'text-green':margin>=5?'text-amber':'text-red'} fw7">${margin.toFixed(1)}%</span>`,
+          trend
+        );
+      })
+    )}</div>`);
+};
 
 // renderNav/go called by coEnter() after company is selected
 </script>
