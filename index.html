@@ -3004,6 +3004,381 @@ PAGES.costanalysis = function(){
     )}</div>`);
 };
 
+// ════════════════════════════════════════════════════════════════
+// BATCH COSTING v2 — ربط التشغيلة بدفعات الاستلام الفعلية
+// السعر بيجي تلقائياً من سجل الاستلام برقم الفاتورة
+// ════════════════════════════════════════════════════════════════
+
+// Override addBatchMaterials — النسخة الجديدة الذكية
+function addBatchMaterials(productionOrderId){
+  const order = getById('productionOrders', productionOrderId);
+  if(!order) return;
+  const prod = getById('products', order.productId);
+  const existingMats = getAll('batchMaterials').filter(m => m.productionOrderId === productionOrderId);
+  const bom = (getAll('productBOM')||[]).filter(b => b.productId === order.productId);
+
+  // حساب الإجماليات
+  const currentTotal = existingMats.reduce((s,m)=>s+Number(m.quantity||0)*Number(m.unitCostAtTime||0),0);
+  const qty = Number(order.quantity)||1;
+
+  // جدول المواد المضافة
+  const existingRows = existingMats.map(m => {
+    const mat = getById('materials', m.materialId);
+    const rcpt = m.receiptId ? getById('materialReceipts', m.receiptId) : null;
+    return `<tr>
+      <td><strong>${mat?.name||m.materialName||'-'}</strong></td>
+      <td>${badge(mat?.materialType||'raw_material')}</td>
+      <td class="fw7">${fmtN(m.quantity)} ${mat?.unit||''}</td>
+      <td><span class="text-blue fw7">${fmt(m.unitCostAtTime)} ج.م</span>
+        ${rcpt?`<br><span style="font-size:10px;color:var(--muted)">فاتورة: ${rcpt.invoiceNumber||'—'}</span>`:''}
+      </td>
+      <td><span class="text-red fw7">${fmt(Number(m.quantity)*Number(m.unitCostAtTime))} ج.م</span></td>
+      <td style="font-size:11px;color:var(--muted)">${m.receiptBatch||rcpt?.batchNumber||'—'}</td>
+      <td><button class="icon-btn del" onclick="removeBatchMaterial(${m.id},${productionOrderId})">${ic.del}</button></td>
+    </tr>`;
+  }).join('');
+
+  showModal(modal(
+    `🧪 مواد التشغيلة — ${prod?.name||''} (${order.orderNumber||'PO-'+order.id})`,
+    `
+    <!-- ملخص التكلفة -->
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+      <div style="background:var(--green-bg);border:1px solid rgba(46,160,67,.3);border-radius:8px;padding:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">الكمية المنتجة</div>
+        <div class="fw7 text-green">${fmtN(order.quantity)} وحدة</div>
+      </div>
+      <div style="background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.2);border-radius:8px;padding:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">إجمالي تكلفة المواد</div>
+        <div class="fw7 text-red">${fmt(currentTotal)} ج.م</div>
+      </div>
+      <div style="background:rgba(56,139,253,.08);border:1px solid rgba(56,139,253,.2);border-radius:8px;padding:10px;text-align:center">
+        <div style="font-size:11px;color:var(--muted);margin-bottom:4px">تكلفة مواد/وحدة</div>
+        <div class="fw7 text-blue">${fmt(currentTotal/qty)} ج.م</div>
+      </div>
+    </div>
+
+    <!-- المواد المضافة -->
+    ${existingMats.length ? `
+    <div style="margin-bottom:16px">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">المواد المضافة (${existingMats.length})</div>
+      <div class="tbl-wrap"><table style="font-size:12px">
+        <thead><tr><th>المادة</th><th>النوع</th><th>الكمية</th><th>سعر الفاتورة</th><th>الإجمالي</th><th>رقم الدفعة</th><th></th></tr></thead>
+        <tbody>${existingRows}</tbody>
+      </table></div>
+    </div>` : ''}
+
+    <!-- إضافة مادة جديدة -->
+    <div style="border:1px solid var(--border);border-radius:10px;padding:14px;background:rgba(255,255,255,.02)">
+      <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:12px;text-transform:uppercase;letter-spacing:.5px">ربط دفعة استلام بالتشغيلة</div>
+
+      <!-- الخطوة 1: اختر المادة -->
+      <div class="fg">
+        <label>الخطوة 1 — اختر المادة *</label>
+        <select id="bm-mat-sel" onchange="loadMaterialReceipts(this.value, ${productionOrderId})">
+          <option value="">اختر مادة...</option>
+          ${(()=>{
+            const mats = getAll('materials');
+            const raw = mats.filter(m=>m.materialType==='raw_material');
+            const pkg = mats.filter(m=>m.materialType==='packaging');
+            return `<optgroup label="🧪 مواد خام">
+              ${raw.map(m=>{
+                const bomEntry=bom.find(b=>b.materialId===m.id);
+                return `<option value="${m.id}" data-unit="${m.unit}" data-suggested="${bomEntry?(Number(bomEntry.quantityPerUnit||0)*qty).toFixed(3):''}">
+                  ${m.name} (${m.unit}) — مخزون: ${fmtN(m.currentStock||0)}
+                </option>`;
+              }).join('')}
+            </optgroup>
+            <optgroup label="📦 مواد تغليف">
+              ${pkg.map(m=>{
+                const bomEntry=bom.find(b=>b.materialId===m.id);
+                return `<option value="${m.id}" data-unit="${m.unit}" data-suggested="${bomEntry?(Number(bomEntry.quantityPerUnit||0)*qty).toFixed(3):''}">
+                  ${m.name} (${m.unit}) — مخزون: ${fmtN(m.currentStock||0)}
+                </option>`;
+              }).join('')}
+            </optgroup>`;
+          })()}
+        </select>
+      </div>
+
+      <!-- الخطوة 2: اختر دفعة الاستلام -->
+      <div class="fg" id="bm-receipts-wrap" style="display:none">
+        <label>الخطوة 2 — اختر دفعة الاستلام (الفاتورة) *</label>
+        <div id="bm-receipts-list"></div>
+      </div>
+
+      <!-- الخطوة 3: حدد الكمية -->
+      <div id="bm-qty-wrap" style="display:none">
+        <div style="background:rgba(46,160,67,.08);border:1px solid rgba(46,160,67,.2);border-radius:8px;padding:10px;margin-bottom:12px;font-size:12px" id="bm-receipt-info"></div>
+        <div class="form-row">
+          ${fg('الخطوة 3 — الكمية المستخدمة *', inp('bm-qty','number','','الكمية من هذه الدفعة'))}
+          ${fg('الكمية المتاحة من الدفعة','<div id="bm-avail" style="padding:9px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-size:13px;color:var(--muted)">—</div>')}
+        </div>
+        <div id="bm-line-total" style="font-size:14px;font-weight:700;color:var(--green-light);margin-bottom:12px;padding:8px 12px;background:var(--green-bg);border-radius:8px;display:none"></div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-green" id="bm-save-btn" style="display:none" onclick="saveBatchMaterialFromReceipt(${productionOrderId})">➕ إضافة المادة</button>
+        <button class="btn btn-ghost" onclick="closeModal()">إغلاق</button>
+        ${bom.length ? `<button class="btn btn-ghost" style="color:var(--blue);border-color:var(--blue)" onclick="autoFillFromReceipts(${productionOrderId},${qty})">⚡ ملء تلقائي من آخر دفعة مستلمة</button>` : ''}
+      </div>
+    </div>`
+  ));
+}
+
+// ── تحميل دفعات الاستلام للمادة المختارة ────────────────────
+function loadMaterialReceipts(matId, productionOrderId){
+  if(!matId){ document.getElementById('bm-receipts-wrap').style.display='none'; return; }
+  matId = Number(matId);
+  const mat = getById('materials', matId);
+  const receipts = getAll('materialReceipts')
+    .filter(r => r.materialId === matId && r.unitCost)
+    .sort((a,b) => (b.receiptDate||'') > (a.receiptDate||'') ? 1 : -1);
+
+  // الكمية المقترحة من BOM
+  const opt = document.getElementById('bm-mat-sel')?.options[document.getElementById('bm-mat-sel')?.selectedIndex];
+  const suggested = opt?.dataset?.suggested || '';
+
+  const wrap = document.getElementById('bm-receipts-wrap');
+  const list = document.getElementById('bm-receipts-list');
+  if(!wrap || !list) return;
+
+  if(!receipts.length){
+    list.innerHTML = `<div style="padding:12px;background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.2);border-radius:8px;font-size:13px;color:var(--red)">
+      ⚠️ لا توجد دفعات مستلمة لهذه المادة — <button onclick="closeModal();go('materials')" class="btn btn-ghost btn-sm" style="margin-right:8px">اذهب لاستلام المواد</button>
+    </div>`;
+    wrap.style.display = '';
+    document.getElementById('bm-qty-wrap').style.display='none';
+    document.getElementById('bm-save-btn').style.display='none';
+    return;
+  }
+
+  list.innerHTML = receipts.map(r => {
+    // حساب الكمية المتاحة (المستلمة - المستخدمة في تشغيلات أخرى)
+    const usedInBatches = getAll('batchMaterials')
+      .filter(m => m.receiptId === r.id)
+      .reduce((s,m) => s+Number(m.quantity||0), 0);
+    const available = Number(r.quantityReceived||0) - usedInBatches;
+    const isEnough = available > 0;
+
+    return `<div onclick="${isEnough?`selectReceipt(${r.id},${matId},'${mat?.unit||''}',${available},'${suggested}')`:''}"
+      style="cursor:${isEnough?'pointer':'not-allowed'};border:2px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;transition:.15s;opacity:${isEnough?'1':'.5'};background:var(--bg)"
+      id="rcpt-card-${r.id}"
+      onmouseover="this.style.borderColor='#2ea043'"
+      onmouseout="if(!this.classList.contains('selected'))this.style.borderColor='var(--border)'">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <div>
+          <span class="fw7" style="font-size:13px">${r.batchNumber||'بدون رقم دفعة'}</span>
+          ${r.invoiceNumber?`<span style="margin-right:8px;font-size:11px;color:var(--muted)">فاتورة: <code>${r.invoiceNumber}</code></span>`:''}
+        </div>
+        <span class="text-blue fw7" style="font-size:14px">${fmt(r.unitCost)} ج.م/${mat?.unit||''}</span>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:6px;font-size:12px;color:var(--muted)">
+        <span>📅 تاريخ الاستلام: ${r.receiptDate||'—'}</span>
+        <span>🏭 المورد: ${r.supplier||'—'}</span>
+        <span>📦 مستلم: ${fmtN(r.quantityReceived)} ${mat?.unit||''}</span>
+        <span class="${isEnough?'text-green':'text-red'} fw7">✅ متاح: ${fmtN(Math.max(0,available))} ${mat?.unit||''}</span>
+        ${usedInBatches>0?`<span class="text-amber">⚙️ مستخدم في تشغيلات: ${fmtN(usedInBatches)}</span>`:''}
+      </div>
+    </div>`;
+  }).join('');
+
+  wrap.style.display = '';
+  document.getElementById('bm-qty-wrap').style.display='none';
+  document.getElementById('bm-save-btn').style.display='none';
+}
+
+// ── اختيار دفعة استلام ───────────────────────────────────────
+window._selectedReceipt = null;
+function selectReceipt(receiptId, matId, unit, available, suggested){
+  // Remove previous selection
+  document.querySelectorAll('[id^="rcpt-card-"]').forEach(c=>{
+    c.style.borderColor='var(--border)';
+    c.classList.remove('selected');
+  });
+  const card = document.getElementById(`rcpt-card-${receiptId}`);
+  if(card){ card.style.borderColor='#2ea043'; card.classList.add('selected'); }
+
+  const receipt = getById('materialReceipts', receiptId);
+  const mat = getById('materials', matId);
+  window._selectedReceipt = { receiptId, matId, unitCost: receipt?.unitCost, unit, available };
+
+  // Show info
+  const info = document.getElementById('bm-receipt-info');
+  if(info) info.innerHTML = `
+    <div style="display:flex;gap:16px;flex-wrap:wrap">
+      <span>📋 دفعة: <strong>${receipt?.batchNumber||'—'}</strong></span>
+      <span>🧾 فاتورة: <strong>${receipt?.invoiceNumber||'—'}</strong></span>
+      <span>💰 السعر المسجل: <strong class="text-blue">${fmt(receipt?.unitCost)} ج.م/${unit}</strong></span>
+      <span>📅 تاريخ الاستلام: <strong>${receipt?.receiptDate||'—'}</strong></span>
+      <span>🏭 المورد: <strong>${receipt?.supplier||'—'}</strong></span>
+    </div>`;
+
+  // Show qty input
+  const qtyWrap = document.getElementById('bm-qty-wrap');
+  if(qtyWrap) qtyWrap.style.display='';
+
+  // Set available
+  const availDiv = document.getElementById('bm-avail');
+  if(availDiv) availDiv.innerHTML = `<span class="${available>0?'text-green fw7':'text-red fw7'}">${fmtN(available)} ${unit}</span>`;
+
+  // Set suggested qty from BOM
+  const qtyInp = document.getElementById('bm-qty');
+  if(qtyInp && suggested) qtyInp.value = Math.min(Number(suggested), available).toFixed(3);
+
+  // Show save btn
+  const saveBtn = document.getElementById('bm-save-btn');
+  if(saveBtn) saveBtn.style.display='';
+
+  // Live total calculation
+  if(qtyInp){
+    qtyInp.addEventListener('input', function(){
+      const q = Number(this.value||0), c = Number(receipt?.unitCost||0);
+      const totalDiv = document.getElementById('bm-line-total');
+      if(totalDiv){
+        if(q>0 && c>0){
+          totalDiv.style.display='';
+          totalDiv.innerHTML=`💰 إجمالي هذه المادة: <strong>${fmt(q*c)} ج.م</strong> (${fmtN(q)} ${unit} × ${fmt(c)} ج.م)`;
+        } else { totalDiv.style.display='none'; }
+      }
+      // Warn if qty > available
+      if(q > available){
+        this.style.borderColor='var(--red)';
+        this.style.boxShadow='0 0 0 3px rgba(248,81,73,.15)';
+      } else {
+        this.style.borderColor='';
+        this.style.boxShadow='';
+      }
+    });
+  }
+}
+
+// ── حفظ المادة من دفعة الاستلام ─────────────────────────────
+function saveBatchMaterialFromReceipt(productionOrderId){
+  const sel = window._selectedReceipt;
+  if(!sel) return alert('يرجى اختيار دفعة استلام');
+
+  const qty = numVal('bm-qty');
+  if(!qty) return alert('يرجى تحديد الكمية');
+  if(qty > sel.available){
+    if(!confirm(`⚠️ الكمية المطلوبة (${fmtN(qty)}) أكبر من المتاح (${fmtN(sel.available)} ${sel.unit})\nهل تريد المتابعة؟`)) return;
+  }
+
+  const receipt = getById('materialReceipts', sel.receiptId);
+  const mat = getById('materials', sel.matId);
+
+  insert('batchMaterials', {
+    productionOrderId,
+    materialId: sel.matId,
+    materialName: mat?.name||'',
+    materialType: mat?.materialType||'raw_material',
+    unit: sel.unit,
+    quantity: qty,
+    unitCostAtTime: sel.unitCost,     // السعر من الفاتورة مباشرةً
+    totalCost: qty * Number(sel.unitCost||0),
+    receiptId: sel.receiptId,         // رابط للدفعة
+    receiptBatch: receipt?.batchNumber||null,
+    invoiceNumber: receipt?.invoiceNumber||null,
+    invoiceDate: receipt?.receiptDate||null,
+    supplier: receipt?.supplier||null,
+    recordedAt: new Date().toISOString()
+  });
+
+  // خصم من مخزون المادة
+  if(mat){
+    update('materials', sel.matId, {
+      currentStock: String(Math.max(0, Number(mat.currentStock||0) - qty))
+    });
+  }
+
+  // تحديث تكلفة أمر الإنتاج
+  updateProductionOrderCost(productionOrderId);
+
+  window._selectedReceipt = null;
+  closeModal();
+  addBatchMaterials(productionOrderId);
+}
+
+// ── ملء تلقائي من آخر دفعة مستلمة ──────────────────────────
+function autoFillFromReceipts(productionOrderId, orderQty){
+  const order = getById('productionOrders', productionOrderId);
+  if(!order) return;
+  const bom = (getAll('productBOM')||[]).filter(b => b.productId === order.productId);
+  if(!bom.length) return alert('لا يوجد BOM — أضف وصفة الإنتاج أولاً');
+
+  let added = 0, skipped = [];
+
+  bom.forEach(b => {
+    // تحقق من عدم الإضافة مسبقاً
+    const exists = getAll('batchMaterials').find(m => m.productionOrderId === productionOrderId && m.materialId === b.materialId);
+    if(exists) return;
+
+    // جيب آخر دفعة مستلمة لهذه المادة
+    const receipts = getAll('materialReceipts')
+      .filter(r => r.materialId === b.materialId && r.unitCost && Number(r.quantityReceived||0)>0)
+      .sort((a,b) => (b.receiptDate||'') > (a.receiptDate||'') ? 1 : -1);
+
+    if(!receipts.length){ skipped.push(getById('materials',b.materialId)?.name||'مادة'); return; }
+
+    // احسب الكمية المستخدمة من هذه الدفعة في تشغيلات أخرى
+    const lastReceipt = receipts[0];
+    const usedInBatches = getAll('batchMaterials')
+      .filter(m => m.receiptId === lastReceipt.id)
+      .reduce((s,m)=>s+Number(m.quantity||0),0);
+    const available = Number(lastReceipt.quantityReceived||0) - usedInBatches;
+
+    const neededQty = Number(b.quantityPerUnit||0) * Number(orderQty||0);
+    const mat = getById('materials', b.materialId);
+
+    insert('batchMaterials', {
+      productionOrderId,
+      materialId: b.materialId,
+      materialName: mat?.name||'',
+      materialType: mat?.materialType||'raw_material',
+      unit: mat?.unit||'',
+      quantity: neededQty,
+      unitCostAtTime: lastReceipt.unitCost,
+      totalCost: neededQty * Number(lastReceipt.unitCost||0),
+      receiptId: lastReceipt.id,
+      receiptBatch: lastReceipt.batchNumber||null,
+      invoiceNumber: lastReceipt.invoiceNumber||null,
+      invoiceDate: lastReceipt.receiptDate||null,
+      supplier: lastReceipt.supplier||null,
+      recordedAt: new Date().toISOString()
+    });
+
+    // خصم من المخزون
+    if(mat) update('materials', b.materialId, {
+      currentStock: String(Math.max(0, Number(mat.currentStock||0) - neededQty))
+    });
+
+    added++;
+  });
+
+  updateProductionOrderCost(productionOrderId);
+
+  const msg = `✅ تم إضافة ${added} مادة من آخر دفعة مستلمة بأسعار الفواتير الفعلية.${skipped.length?`\n\n⚠️ لم يتم إضافة: ${skipped.join(', ')} (لا توجد دفعات مستلمة)`:''}`;
+  closeModal();
+  alert(msg);
+  addBatchMaterials(productionOrderId);
+}
+
+// ── تحديث تكلفة أمر الإنتاج ─────────────────────────────────
+function updateProductionOrderCost(productionOrderId){
+  const order = getById('productionOrders', productionOrderId);
+  if(!order) return;
+  const allMats = getAll('batchMaterials').filter(m => m.productionOrderId === productionOrderId);
+  const matTotal = allMats.reduce((s,m)=>s+Number(m.quantity||0)*Number(m.unitCostAtTime||0),0);
+  const cmoTotal = Number(order.cmoBaseCost||0);
+  const grandTotal = matTotal + cmoTotal;
+  const unitCost = order.quantity ? grandTotal / Number(order.quantity) : 0;
+  update('productionOrders', productionOrderId, {
+    materialsCost: String(matTotal),
+    totalCost: String(grandTotal),
+    unitCost: String(unitCost)
+  });
+}
+
+
 // renderNav/go called by coEnter() after company is selected
 </script>
 
