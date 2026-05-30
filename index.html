@@ -325,7 +325,7 @@ const defaultDB = {
   registrations:[], distributors:[], deliveryOrders:[], deliveryItems:[],
   expenses:[], employees:[], budgetLines:[], campaigns:[], salesTargets:[],
   receivables:[], payrollRuns:[], purchaseOrders:[], qualityChecks:[],
-  returns:[], contracts:[],
+  returns:[], contracts:[], assets:[],
   _seq:{}
 };
 
@@ -457,6 +457,7 @@ const navItems=[
   {id:'contracts',icon:'📝',label:'العقود والاتفاقيات',section:'العمليات'},
   {id:'salesvstarget',icon:'📊',label:'المبيعات vs الأهداف',section:'العمليات'},
   {id:'costanalysis',icon:'📉',label:'تحليل تكلفة المنتج',section:'العمليات'},
+  {id:'assets',icon:'🏗️',label:'الأصول الثابتة',section:'المالية'},
 ];
 
 function renderNav(){
@@ -1299,6 +1300,13 @@ function exportExcel(){
     {'البيان':'قيمة المخزون','القيمة (ج.م)':iv},
     {'البيان':'هامش الربح %','القيمة (ج.م)':rev>0?((np/rev)*100).toFixed(2)+'%':'0%'},
   ]]);
+  sheets.push(['الأصول الثابتة',getAll('assets').map(a=>({
+    'اسم الأصل':a.name,'الفئة':a.category||'','تاريخ الشراء':a.purchaseDate||'',
+    'تكلفة الشراء':Number(a.purchaseCost||0),'العمر الإنتاجي':Number(a.usefulLife||0),
+    'معدل الإهلاك %':Number(a.depRate||0),'مجمع الإهلاك':Number(a.accDepreciation||0),
+    'القيمة الدفترية':Number(a.purchaseCost||0)-Number(a.accDepreciation||0),
+    'الحالة':a.status||''
+  }))]);
   sheets.forEach(([name,data])=>XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(data),name));
   XLSX.writeFile(wb,`ERP-Report-${new Date().toISOString().slice(0,10)}.xlsx`);
 }
@@ -1848,6 +1856,95 @@ function saveDB(){
   coRenderGrid();
   /* app starts only after user picks a company */
 })();
+
+
+// ════════════════════════════════════════════════
+// ASSETS PAGE — الأصول الثابتة
+// ════════════════════════════════════════════════
+PAGES.assets = function(){
+  const rows = getAll('assets');
+  const totalCost   = rows.reduce((s,a)=>s+Number(a.purchaseCost||0),0);
+  const totalDepAcc = rows.reduce((s,a)=>s+Number(a.accDepreciation||0),0);
+  const netBook     = totalCost - totalDepAcc;
+
+  // depreciation types
+  const cats = [...new Set(rows.map(a=>a.category||'أخرى'))];
+
+  setPage('الأصول الثابتة','سجل الأصول والإهلاك',
+    `<button class="btn btn-green" onclick="addAsset()">${ic.plus} إضافة أصل</button>`,
+    `<div class="stats-grid g4">
+      <div class="stat-card"><div class="lbl">عدد الأصول</div><div class="val">${rows.length}</div></div>
+      <div class="stat-card"><div class="lbl">إجمالي التكلفة</div><div class="val text-blue">${fmt(totalCost)} ج.م</div></div>
+      <div class="stat-card"><div class="lbl">مجمع الإهلاك</div><div class="val text-red">${fmt(totalDepAcc)} ج.م</div></div>
+      <div class="stat-card"><div class="lbl">القيمة الدفترية</div><div class="val text-green">${fmt(netBook)} ج.م</div></div>
+    </div>
+    <div class="card">${tbl(
+      ['اسم الأصل','الفئة','تاريخ الشراء','تكلفة الشراء (ج.م)','العمر الإنتاجي (سنة)','معدل الإهلاك %','مجمع الإهلاك (ج.م)','القيمة الدفترية (ج.م)','الحالة',''],
+      rows.map(a=>{
+        const netVal = Number(a.purchaseCost||0) - Number(a.accDepreciation||0);
+        return tr(
+          `<strong>${a.name}</strong>`,
+          a.category||'-',
+          a.purchaseDate||'-',
+          `<span class="text-blue fw7">${fmt(a.purchaseCost)} ج.م</span>`,
+          a.usefulLife||'-',
+          a.depRate?a.depRate+'%':'-',
+          `<span class="text-red">${fmt(a.accDepreciation||0)} ج.م</span>`,
+          `<span class="${netVal>0?'text-green':'text-red'} fw7">${fmt(netVal)} ج.م</span>`,
+          badge(a.status==='active'?'active':a.status==='disposed'?'cancelled':'pending'),
+          `<div class="action-bar">
+            <button class="icon-btn edit" onclick="editAsset(${a.id})">${ic.edit}</button>
+            <button class="icon-btn del" onclick="if(confirm('حذف؟')){remove('assets',${a.id});go('assets')}">${ic.del}</button>
+          </div>`
+        );
+      })
+    )}</div>`);
+};
+
+function assetForm(a={}){
+  const ASSET_CATS=['معدات وآلات','مباني وإنشاءات','سيارات ومركبات','أثاث ومفروشات',
+    'أجهزة كمبيوتر','معدات مختبر','تجهيزات مستودعات','أخرى'];
+  const ASSET_STATUS=[{v:'active',l:'نشط'},{v:'inactive',l:'معطل'},{v:'disposed',l:'مُستبعد'}];
+  return `
+    ${fg('اسم الأصل *',inp('as-name','text',a.name))}
+    <div class="form-row">
+      ${fg('الفئة *',sel('as-cat',ASSET_CATS,a.category||'معدات وآلات'))}
+      ${fg('الحالة',sel('as-status',ASSET_STATUS,a.status||'active'))}
+    </div>
+    <div class="form-row">
+      ${fg('تاريخ الشراء',inp('as-date','date',a.purchaseDate||today()))}
+      ${fg('تكلفة الشراء (ج.م) *',inp('as-cost','number',a.purchaseCost))}
+    </div>
+    <div class="form-row">
+      ${fg('العمر الإنتاجي (سنوات)',inp('as-life','number',a.usefulLife||5))}
+      ${fg('معدل الإهلاك السنوي %',inp('as-rate','number',a.depRate||20))}
+    </div>
+    <div class="form-row">
+      ${fg('مجمع الإهلاك حتى الآن (ج.م)',inp('as-dep','number',a.accDepreciation||0))}
+      ${fg('رقم الأصل / الكود',inp('as-code','text',a.assetCode))}
+    </div>
+    ${fg('الموقع / القسم',inp('as-loc','text',a.location))}
+    ${fg('ملاحظات',inp('as-notes','text',a.notes))}
+    <div class="form-actions">
+      <button class="btn btn-green" onclick="saveAsset(${a.id||''})">💾 حفظ</button>
+      <button class="btn btn-ghost" onclick="closeModal()">إلغاء</button>
+    </div>`;
+}
+function addAsset(){ showModal(modal('إضافة أصل ثابت جديد', assetForm())); }
+function editAsset(id){ const a=getById('assets',id); if(!a)return; showModal(modal('تعديل أصل',assetForm(a))); }
+function saveAsset(id){
+  const name=val('as-name'), cost=val('as-cost');
+  if(!name||!cost) return alert('يرجى تعبئة اسم الأصل والتكلفة');
+  const d={
+    name, category:val('as-cat'), status:val('as-status'),
+    purchaseDate:val('as-date')||null, purchaseCost:cost,
+    usefulLife:val('as-life')||null, depRate:val('as-rate')||null,
+    accDepreciation:val('as-dep')||'0',
+    assetCode:val('as-code')||null, location:val('as-loc')||null, notes:val('as-notes')||null
+  };
+  id ? update('assets',id,d) : insert('assets',d);
+  closeModal(); go('assets');
+}
 
 // renderNav/go called by coEnter() after company is selected
 </script>
