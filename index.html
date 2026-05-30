@@ -360,7 +360,7 @@ const defaultDB = {
   registrations:[], distributors:[], deliveryOrders:[], deliveryItems:[],
   expenses:[], employees:[], budgetLines:[], campaigns:[], salesTargets:[],
   receivables:[], payrollRuns:[], purchaseOrders:[], qualityChecks:[],
-  returns:[], contracts:[], assets:[], eInvoices:[], taxLines:[], batchMaterials:[],
+  returns:[], contracts:[], assets:[], eInvoices:[], taxLines:[], batchMaterials:[], productIngredients:[],
   _seq:{}
 };
 
@@ -572,15 +572,31 @@ dashboard(){
 
 products(){
   const rows=getAll('products');
+  const ings=getAll('productIngredients');
   setPage('إدارة المنتجات',`${rows.length} منتج مسجل`,
     `<button class="btn btn-green" onclick="addProduct()">${ic.plus} إضافة منتج</button>`,
-    `<div class="card">${tbl(['اسم المنتج','الاسم العلمي','الشكل','التركيز','الوحدة','سعر البيع','الحالة',''],
-      rows.map(p=>tr(
-        `<strong>${p.name}</strong>`,p.scientificName||'-',p.dosageForm,p.strength||'-',p.unit||'-',
-        p.sellingPrice?`<span class="text-green fw7">${fmt(p.sellingPrice)} ج.م</span>`:'-',
-        badge(p.status||'active'),
-        `<div class="action-bar"><button class="icon-btn edit" onclick="editProduct(${p.id})">${ic.edit}</button><button class="icon-btn del" onclick="if(confirm('حذف؟')){remove('products',${p.id});go('products')}">${ic.del}</button></div>`
-      ))
+    `<div class="card">${tbl(['اسم المنتج','الاسم العلمي (LATIN)','الشكل','التركيز','الحجم','الفئة','سعر البيع','الحالة',''],
+      rows.map(p=>{
+        const pIngs=ings.filter(i=>i.productId===p.id);
+        const activeIngs=pIngs.filter(i=>i.type==='active');
+        const catLabels={antibiotic:'مضاد حيوي',analgesic:'مسكن',antifungal:'مضاد فطريات',antiviral:'مضاد فيروسات',antiinflammatory:'مضاد التهاب',vitamin:'فيتامين',cardiac:'قلب',gi:'جهاز هضمي',derma:'جلدية',other:'أخرى'};
+        return tr(
+          `<div><strong>${p.name}</strong>${p.productCode?`<br><span style="font-size:10px;color:var(--muted)">${p.productCode}</span>`:''}
+           ${activeIngs.length?`<br>${activeIngs.map(i=>`<span style="font-size:11px;color:var(--green-light)">${i.name} ${i.concentration}${i.unit}</span>`).join(', ')}`:''}</div>`,
+          p.scientificName||'-',
+          p.dosageForm,
+          p.strength||'-',
+          p.packageSize||'-',
+          p.category?`<span class="badge b-blue" style="font-size:10px">${catLabels[p.category]||p.category}</span>`:'—',
+          p.sellingPrice?`<span class="text-green fw7">${fmt(p.sellingPrice)} ج.م</span>`:'-',
+          badge(p.status||'active'),
+          `<div class="action-bar">
+            <button class="icon-btn" style="color:var(--blue)" title="المكونات (${pIngs.length})" onclick="showProductIngredients(${p.id})" >🧬</button>
+            <button class="icon-btn edit" onclick="editProduct(${p.id})">${ic.edit}</button>
+            <button class="icon-btn del" onclick="if(confirm('حذف؟')){remove('products',${p.id});go('products')}">${ic.del}</button>
+          </div>`
+        );
+      })
     )}</div>`);
 },
 
@@ -944,23 +960,111 @@ function renderExpTbl(type){
 // ═══════════════════════════════════════════════
 // MODALS — Products
 // ═══════════════════════════════════════════════
-function addProduct(){ showModal(modal('إضافة منتج جديد',productForm())); }
-function editProduct(id){ const p=getById('products',id); if(!p)return; showModal(modal('تعديل منتج',productForm(p))); }
+function addProduct(){
+  window._pendingIngredients=[];
+  showModal(modal('إضافة منتج جديد',productForm()));
+  setTimeout(()=>{ initTabs(); renderIngredientList(0); },100);
+}
+function editProduct(id){
+  const p=getById('products',id); if(!p)return;
+  showModal(modal('تعديل منتج',productForm(p)));
+  setTimeout(()=>{ initTabs(); renderIngredientList(id); },100);
+}
 function productForm(p={}){
   return `
-    ${fg('اسم المنتج *',inp('p-name','text',p.name))}
-    ${fg('الاسم العلمي',inp('p-sci','text',p.scientificName))}
-    <div class="form-row">
-      ${fg('الشكل الدوائي *',sel('p-form',['اختر...',...FORMS],p.dosageForm))}
-      ${fg('التركيز',inp('p-str','text',p.strength,'500mg'))}
+    <div class="tabs" style="margin-bottom:16px">
+      <button class="tab active" data-group="pf" data-tab="pf-basic">البيانات الأساسية</button>
+      <button class="tab" data-group="pf" data-tab="pf-ingredients">المكونات والتركيبة</button>
+      <button class="tab" data-group="pf" data-tab="pf-reg">التسجيل والرقابة</button>
     </div>
-    <div class="form-row">
-      ${fg('الوحدة',inp('p-unit','text',p.unit||'علبة'))}
-      ${fg('سعر البيع (ج.م)',inp('p-price','number',p.sellingPrice))}
+
+    <!-- TAB 1: البيانات الأساسية -->
+    <div id="pf-basic" class="tab-pane" data-group="pf">
+      ${fg('اسم المنتج *',inp('p-name','text',p.name))}
+      ${fg('الاسم العلمي (LATIN)',inp('p-sci','text',p.scientificName,'مثال: Amoxicillin Trihydrate'))}
+      <div class="form-row">
+        ${fg('الشكل الدوائي *',sel('p-form',['اختر...',...FORMS],p.dosageForm))}
+        ${fg('التركيز الكلي',inp('p-str','text',p.strength,'مثال: 250mg/5ml'))}
+      </div>
+      <div class="form-row">
+        ${fg('الوحدة',inp('p-unit','text',p.unit||'علبة','مثال: زجاجة 60مل'))}
+        ${fg('سعر البيع (ج.م)',inp('p-price','number',p.sellingPrice))}
+      </div>
+      <div class="form-row">
+        ${fg('الحجم / الوزن',inp('p-size','text',p.packageSize||'','مثال: 60مل، 20 قرص'))}
+        ${fg('فئة المنتج',sel('p-category',[
+          {v:'antibiotic',l:'مضاد حيوي'},{v:'analgesic',l:'مسكن'},
+          {v:'antifungal',l:'مضاد فطريات'},{v:'antiviral',l:'مضاد فيروسات'},
+          {v:'antiinflammatory',l:'مضاد التهاب'},{v:'vitamin',l:'فيتامين ومكمل'},
+          {v:'cardiac',l:'قلب وأوعية'},{v:'gi',l:'جهاز هضمي'},
+          {v:'derma',l:'جلدية'},{v:'other',l:'أخرى'}
+        ],p.category||'other'))}
+      </div>
+      ${fg('الحالة',sel('p-status',[{v:'active',l:'نشط'},{v:'inactive',l:'غير نشط'},{v:'pending',l:'قيد التسجيل'}],p.status||'active'))}
     </div>
-    ${fg('الحالة',sel('p-status',[{v:'active',l:'نشط'},{v:'inactive',l:'غير نشط'}],p.status||'active'))}
-    <div class="form-actions">
-      <button class="btn btn-green" onclick="saveProduct(${p.id||''})">💾 حفظ</button>
+
+    <!-- TAB 2: المكونات والتركيبة -->
+    <div id="pf-ingredients" class="tab-pane" data-group="pf" style="display:none">
+      <div style="margin-bottom:12px;padding:10px;background:rgba(56,139,253,.08);border:1px solid rgba(56,139,253,.2);border-radius:8px;font-size:12px;color:var(--muted)">
+        💡 المكونات هنا هي <strong>التركيبة الكيميائية للمنتج</strong> (المادة الفعالة + السواغات) — مختلفة عن مواد الإنتاج في BOM
+      </div>
+
+      <!-- المكونات المضافة -->
+      <div id="pf-ing-list" style="margin-bottom:12px"></div>
+
+      <!-- إضافة مكون جديد -->
+      <div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:rgba(255,255,255,.02)">
+        <div style="font-size:11px;font-weight:600;color:var(--muted);margin-bottom:10px;text-transform:uppercase">إضافة مكون</div>
+        <div class="form-row">
+          ${fg('اسم المكون *',inp('ing-name','text','','مثال: Amoxicillin Trihydrate'))}
+          ${fg('النوع',sel('ing-type',[
+            {v:'active',l:'مادة فعالة (Active)'},
+            {v:'excipient',l:'سواغ (Excipient)'},
+            {v:'preservative',l:'مادة حافظة'},
+            {v:'flavor',l:'نكهة ومحلي'},
+            {v:'colorant',l:'ملون'},
+            {v:'coating',l:'طلاء (Coating)'},
+            {v:'other',l:'أخرى'}
+          ],'active'))}
+        </div>
+        <div class="form-row">
+          ${fg('التركيز / الكمية *',inp('ing-conc','text','','مثال: 250mg أو 5ml أو 2%'))}
+          ${fg('الوحدة',sel('ing-unit',[
+            {v:'mg',l:'mg — ملليجرام'},{v:'g',l:'g — جرام'},
+            {v:'mcg',l:'mcg — ميكروجرام'},{v:'IU',l:'IU — وحدة دولية'},
+            {v:'ml',l:'ml — مليلتر'},{v:'%',l:'% — نسبة مئوية'},
+            {v:'qs',l:'qs — كافٍ للتكملة'},{v:'other',l:'أخرى'}
+          ],'mg'))}
+        </div>
+        <button class="btn btn-ghost btn-sm" onclick="addIngredientToList(${p.id||0})">➕ إضافة للقائمة</button>
+      </div>
+    </div>
+
+    <!-- TAB 3: التسجيل والرقابة -->
+    <div id="pf-reg" class="tab-pane" data-group="pf" style="display:none">
+      <div class="form-row">
+        ${fg('رقم التسجيل (هيئة الدواء)',inp('p-regno','text',p.registrationNo||'','مثال: REG-2024-XXXX'))}
+        ${fg('تاريخ انتهاء التسجيل',inp('p-regexp','date',p.registrationExpiry||''))}
+      </div>
+      <div class="form-row">
+        ${fg('رقم الترميز الباركود',inp('p-barcode','text',p.barcode||''))}
+        ${fg('رمز المنتج الداخلي',inp('p-code','text',p.productCode||''))}
+      </div>
+      <div class="form-row">
+        ${fg('مدة الصلاحية (أشهر)',inp('p-shelf','number',p.shelfLifeMonths||'','مثال: 24'))}
+        ${fg('ظروف التخزين',sel('p-storage',[
+          {v:'room',l:'درجة حرارة الغرفة (15-25°C)'},
+          {v:'cool',l:'بارد (2-8°C)'},
+          {v:'frozen',l:'مجمد (-20°C)'},
+          {v:'dark',l:'بعيداً عن الضوء'}
+        ],p.storageCondition||'room'))}
+      </div>
+      ${fg('تعليمات خاصة',inp('p-instructions','text',p.specialInstructions||'','مثال: يحفظ بعيداً عن متناول الأطفال'))}
+      ${fg('ملاحظات',inp('p-notes','text',p.notes||''))}
+    </div>
+
+    <div class="form-actions" style="margin-top:16px">
+      <button class="btn btn-green" onclick="saveProduct(${p.id||''})">💾 حفظ المنتج</button>
       <button class="btn btn-ghost" onclick="closeModal()">إلغاء</button>
     </div>`;
 }
@@ -3378,6 +3482,42 @@ function updateProductionOrderCost(productionOrderId){
   });
 }
 
+
+
+function showProductIngredients(productId){
+  const prod = getById('products', productId);
+  const ings = getAll('productIngredients').filter(i=>i.productId===productId);
+  const typeLabels={active:'مادة فعالة',excipient:'سواغ',preservative:'مادة حافظة',flavor:'نكهة',colorant:'ملون',coating:'طلاء',other:'أخرى'};
+  const typeColors={active:'b-green',excipient:'b-gray',preservative:'b-blue',flavor:'b-amber',colorant:'b-purple',coating:'b-blue',other:'b-gray'};
+  const storageLabels={room:'درجة حرارة الغرفة',cool:'بارد 2-8°C',frozen:'مجمد -20°C',dark:'بعيداً عن الضوء'};
+
+  showModal(modal(`🧬 تركيبة ${prod?.name||''}`,`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;font-size:12px">
+      ${prod?.strength?`<div><span class="text-muted">التركيز الكلي:</span> <strong>${prod.strength}</strong></div>`:''}
+      ${prod?.packageSize?`<div><span class="text-muted">الحجم:</span> <strong>${prod.packageSize}</strong></div>`:''}
+      ${prod?.shelfLifeMonths?`<div><span class="text-muted">مدة الصلاحية:</span> <strong>${prod.shelfLifeMonths} شهر</strong></div>`:''}
+      ${prod?.storageCondition?`<div><span class="text-muted">التخزين:</span> <strong>${storageLabels[prod.storageCondition]||prod.storageCondition}</strong></div>`:''}
+      ${prod?.barcode?`<div><span class="text-muted">الباركود:</span> <code>${prod.barcode}</code></div>`:''}
+      ${prod?.specialInstructions?`<div style="grid-column:1/-1"><span class="text-muted">تعليمات:</span> ${prod.specialInstructions}</div>`:''}
+    </div>
+
+    ${ings.length ? `
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>المكون</th><th>النوع</th><th>التركيز</th><th>الوحدة</th><th></th></tr></thead>
+      <tbody>${ings.map(i=>`<tr>
+        <td><strong>${i.name}</strong></td>
+        <td><span class="badge ${typeColors[i.type]||'b-gray'}">${typeLabels[i.type]||i.type}</span></td>
+        <td class="fw7 text-blue">${i.concentration}</td>
+        <td>${i.unit}</td>
+        <td><button class="icon-btn del" onclick="remove('productIngredients',${i.id});showProductIngredients(${productId})">${ic.del}</button></td>
+      </tr>`).join('')}</tbody>
+    </table></div>` : '<div class="empty" style="padding:24px">لا توجد مكونات مضافة — افتح تعديل المنتج وأضف من تاب المكونات</div>'}
+
+    <div class="form-actions">
+      <button class="btn btn-green" onclick="closeModal();editProduct(${productId})">${ic.edit} تعديل المنتج وإضافة مكونات</button>
+      <button class="btn btn-ghost" onclick="closeModal()">إغلاق</button>
+    </div>`));
+}
 
 // renderNav/go called by coEnter() after company is selected
 </script>
